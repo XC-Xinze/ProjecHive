@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   DndContext,
   DragOverlay,
@@ -43,6 +43,7 @@ function isOverdue(dateStr) {
 export default function Board() {
   const { owner, repo, currentUser } = useStore()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [tasks, setTasks] = useState([])
   const [members, setMembers] = useState([])
   const [loading, setLoading] = useState(true)
@@ -83,6 +84,17 @@ export default function Board() {
   }, [owner, repo])
 
   useEffect(() => { loadTasks() }, [loadTasks])
+
+  // Auto-open task from ?task= search param
+  useEffect(() => {
+    const taskName = searchParams.get('task')
+    if (!taskName || tasks.length === 0) return
+    const match = tasks.find(t => t.title.toLowerCase() === taskName.toLowerCase())
+    if (match) {
+      setSelectedTask(match.id)
+      setSearchParams({}, { replace: true })
+    }
+  }, [tasks, searchParams, setSearchParams])
 
   async function moveTask(taskId, newStatus) {
     const task = tasks.find((t) => t.id === taskId)
@@ -956,7 +968,7 @@ function TaskDetailModal({ task, members = [], owner, repo, navigate, onClose, o
                 {relatedMsgs.map((m) => (
                   <button
                     key={m.id}
-                    onClick={() => { onClose(); navigate('/messages') }}
+                    onClick={() => { onClose(); navigate(`/messages?highlight=${m.id}`) }}
                     className="w-full flex items-start gap-2 p-2 bg-surface-low rounded-lg text-left hover:shadow-card transition-all cursor-pointer"
                   >
                     <img src={`https://github.com/${m.author}.png?size=24`} alt="" className="w-5 h-5 rounded-full shrink-0 mt-0.5" />

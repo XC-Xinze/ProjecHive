@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ProjectHive — Collaborative Research Project Management</title>
+  <meta name="description" content="A lightweight desktop app for research groups to collaborate using GitHub private repos. No server required." />
+  <link rel="icon" href="logo.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@700;800&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --primary: #4456ba;
+      --primary-light: #8596ff;
+      --surface: #f9f9f7;
+      --surface-card: #ffffff;
+      --surface-low: #f2f2ef;
+      --on-surface: #2f3332;
+      --on-surface-dim: #74777f;
+      --accent: #4a6800;
+      --accent-light: #bae26e;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--surface);
+      color: var(--on-surface);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── NAV ── */
+    nav {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 50;
+      background: rgba(249, 249, 247, 0.85);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border-bottom: 1px solid rgba(47, 51, 50, 0.06);
+    }
+    .nav-inner {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 0 24px;
+      height: 64px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .nav-brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      text-decoration: none;
+      color: var(--on-surface);
+    }
+    .nav-brand img { width: 32px; height: 32px; border-radius: 8px; }
+    .nav-brand span { font-family: 'Manrope', sans-serif; font-weight: 800; font-size: 1.15rem; }
+    .nav-links { display: flex; align-items: center; gap: 28px; }
+    .nav-links a {
+      text-decoration: none;
+      color: var(--on-surface-dim);
+      font-size: 0.875rem;
+      font-weight: 500;
+      transition: color 0.2s;
+    }
+    .nav-links a:hover { color: var(--on-surface); }
+    .btn-nav {
+      padding: 8px 20px;
+      background: linear-gradient(135deg, var(--primary), var(--primary-light));
+      color: #fff;
+      border: none;
+      border-radius: 999px;
+      font-size: 0.875rem;
+      font-weight: 600;
+      text-decoration: none;
+      transition: box-shadow 0.25s, transform 0.15s;
+      cursor: pointer;
+    }
+    .btn-nav:hover {
+      box-shadow: 0 8px 24px rgba(68, 86, 186, 0.3);
+      transform: translateY(-1px);
+    }
+
+    /* ── HERO ── */
+    .hero {
+      padding: 160px 24px 100px;
+      text-align: center;
+      max-width: 800px;
+      margin: 0 auto;
+    }
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 16px;
+      background: var(--surface-card);
+      border-radius: 999px;
+      font-size: 0.8rem;
+      font-weight: 500;
+      color: var(--primary);
+      box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+      margin-bottom: 28px;
+    }
+    .hero-badge .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent-light); }
+    .hero h1 {
+      font-family: 'Manrope', sans-serif;
+      font-weight: 800;
+      font-size: clamp(2.4rem, 5vw, 3.5rem);
+      line-height: 1.15;
+      letter-spacing: -0.02em;
+      margin-bottom: 20px;
+    }
+    .hero h1 .gradient-text {
+      background: linear-gradient(135deg, var(--primary), var(--primary-light));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .hero p {
+      font-size: 1.15rem;
+      color: var(--on-surface-dim);
+      max-width: 560px;
+      margin: 0 auto 36px;
+    }
+    .hero-actions { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+    .btn-primary {
+      padding: 14px 32px;
+      background: linear-gradient(135deg, var(--primary), var(--primary-light));
+      color: #fff;
+      border: none;
+      border-radius: 999px;
+      font-size: 1rem;
+      font-weight: 600;
+      text-decoration: none;
+      transition: box-shadow 0.25s, transform 0.15s;
+      cursor: pointer;
+    }
+    .btn-primary:hover {
+      box-shadow: 0 12px 32px rgba(68, 86, 186, 0.35);
+      transform: translateY(-2px);
+    }
+    .btn-secondary {
+      padding: 14px 32px;
+      background: var(--surface-card);
+      color: var(--on-surface);
+      border: none;
+      border-radius: 999px;
+      font-size: 1rem;
+      font-weight: 600;
+      text-decoration: none;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+      transition: box-shadow 0.25s, transform 0.15s;
+      cursor: pointer;
+    }
+    .btn-secondary:hover {
+      box-shadow: 0 8px 24px rgba(0,0,0,0.08);
+      transform: translateY(-1px);
+    }
+
+    /* ── SECTION SHARED ── */
+    section { padding: 80px 24px; }
+    .section-inner { max-width: 1120px; margin: 0 auto; }
+    .section-label {
+      display: inline-block;
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--primary);
+      margin-bottom: 12px;
+    }
+    .section-title {
+      font-family: 'Manrope', sans-serif;
+      font-weight: 700;
+      font-size: clamp(1.6rem, 3vw, 2.2rem);
+      line-height: 1.25;
+      margin-bottom: 16px;
+    }
+    .section-desc {
+      font-size: 1rem;
+      color: var(--on-surface-dim);
+      max-width: 560px;
+    }
+
+    /* ── FEATURES GRID ── */
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 20px;
+      margin-top: 48px;
+    }
+    .feature-card {
+      background: var(--surface-card);
+      border-radius: 16px;
+      padding: 28px;
+      transition: box-shadow 0.3s, transform 0.2s;
+    }
+    .feature-card:hover {
+      box-shadow: 0 12px 40px rgba(47, 51, 50, 0.06);
+      transform: translateY(-2px);
+    }
+    .feature-icon {
+      width: 44px;
+      height: 44px;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 16px;
+      font-size: 1.3rem;
+    }
+    .fi-purple { background: rgba(68, 86, 186, 0.1); color: var(--primary); }
+    .fi-green  { background: rgba(74, 104, 0, 0.1); color: var(--accent); }
+    .fi-amber  { background: rgba(200, 130, 0, 0.1); color: #c88200; }
+    .fi-teal   { background: rgba(0, 150, 136, 0.1); color: #009688; }
+    .fi-rose   { background: rgba(200, 60, 80, 0.1); color: #c83c50; }
+    .fi-blue   { background: rgba(30, 120, 220, 0.1); color: #1e78dc; }
+    .feature-card h3 {
+      font-weight: 600;
+      font-size: 1.05rem;
+      margin-bottom: 8px;
+    }
+    .feature-card p {
+      font-size: 0.9rem;
+      color: var(--on-surface-dim);
+      line-height: 1.55;
+    }
+
+    /* ── HOW IT WORKS ── */
+    .how-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 32px;
+      margin-top: 48px;
+    }
+    .how-step {
+      text-align: center;
+      padding: 20px;
+    }
+    .how-num {
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--primary), var(--primary-light));
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: 'Manrope', sans-serif;
+      font-weight: 800;
+      font-size: 1.2rem;
+      margin: 0 auto 16px;
+    }
+    .how-step h3 { font-weight: 600; margin-bottom: 8px; }
+    .how-step p { font-size: 0.9rem; color: var(--on-surface-dim); }
+
+    /* ── TECH ── */
+    .tech-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 32px;
+    }
+    .tech-pill {
+      padding: 8px 18px;
+      background: var(--surface-card);
+      border-radius: 999px;
+      font-size: 0.875rem;
+      font-weight: 500;
+      color: var(--on-surface);
+      box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+    }
+
+    /* ── CTA ── */
+    .cta-section {
+      text-align: center;
+      padding: 100px 24px;
+    }
+    .cta-section h2 {
+      font-family: 'Manrope', sans-serif;
+      font-weight: 800;
+      font-size: clamp(1.8rem, 4vw, 2.6rem);
+      margin-bottom: 16px;
+    }
+    .cta-section p {
+      font-size: 1.05rem;
+      color: var(--on-surface-dim);
+      margin-bottom: 32px;
+    }
+
+    /* ── FOOTER ── */
+    footer {
+      border-top: 1px solid rgba(47, 51, 50, 0.06);
+      padding: 32px 24px;
+      text-align: center;
+    }
+    .footer-inner {
+      max-width: 1120px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 16px;
+    }
+    .footer-brand {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      text-decoration: none;
+      color: var(--on-surface-dim);
+      font-size: 0.875rem;
+    }
+    .footer-brand img { width: 20px; height: 20px; border-radius: 4px; }
+    .footer-links { display: flex; gap: 20px; }
+    .footer-links a {
+      text-decoration: none;
+      color: var(--on-surface-dim);
+      font-size: 0.8rem;
+      transition: color 0.2s;
+    }
+    .footer-links a:hover { color: var(--on-surface); }
+
+    /* ── RESPONSIVE ── */
+    @media (max-width: 640px) {
+      .nav-links { display: none; }
+      .hero { padding: 130px 20px 60px; }
+      .features-grid { grid-template-columns: 1fr; }
+      .footer-inner { flex-direction: column; text-align: center; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Navigation -->
+  <nav>
+    <div class="nav-inner">
+      <a href="#" class="nav-brand">
+        <img src="logo.png" alt="ProjectHive" />
+        <span>ProjectHive</span>
+      </a>
+      <div class="nav-links">
+        <a href="#features">Features</a>
+        <a href="#how-it-works">How It Works</a>
+        <a href="#tech-stack">Tech Stack</a>
+        <a href="https://github.com/XC-Xinze/ProjecHive" class="btn-nav">GitHub</a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Hero -->
+  <section class="hero">
+    <div class="hero-badge">
+      <span class="dot"></span>
+      Open Source & Free
+    </div>
+    <h1>
+      Research collaboration,<br />
+      <span class="gradient-text">powered by GitHub.</span>
+    </h1>
+    <p>
+      A lightweight desktop app for research groups to manage tasks, share documents, and communicate — all stored in GitHub private repos. No extra server required.
+    </p>
+    <div class="hero-actions">
+      <a href="https://github.com/XC-Xinze/ProjecHive/releases" class="btn-primary">Download</a>
+      <a href="https://github.com/XC-Xinze/ProjecHive" class="btn-secondary">View on GitHub</a>
+    </div>
+  </section>
+
+  <!-- Features -->
+  <section id="features">
+    <div class="section-inner">
+      <span class="section-label">Features</span>
+      <h2 class="section-title">Everything your research group needs</h2>
+      <p class="section-desc">
+        ProjectHive brings project management, communication, and file sharing together in one place — backed by the reliability of Git.
+      </p>
+      <div class="features-grid">
+        <div class="feature-card">
+          <div class="feature-icon fi-purple">
+            <svg width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+          </div>
+          <h3>Kanban Board</h3>
+          <p>Drag-and-drop task management with Todo, Doing, Done, and Blocked columns. Assign members, set due dates, and add labels.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon fi-green">
+            <svg width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          </div>
+          <h3>Team Messages</h3>
+          <p>Real-time messaging with @mentions, #task references, emoji reactions, threaded replies, pinning, and labels.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon fi-amber">
+            <svg width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><polyline points="14,2 14,8 20,8"/></svg>
+          </div>
+          <h3>Document Sharing</h3>
+          <p>Upload files and share links in a searchable document library. Attach files directly from messages.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon fi-teal">
+            <svg width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12,6 12,12 16,14"/></svg>
+          </div>
+          <h3>Timeline</h3>
+          <p>Activity feed with commit history, keyword badges, and smart filtering that hides system-generated commits.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon fi-rose">
+            <svg width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+          </div>
+          <h3>Notifications</h3>
+          <p>In-app notification center for @mentions and task assignments, with click-to-navigate and read/unread tracking.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon fi-blue">
+            <svg width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/><path d="M8 12l2.5 2.5L16 9"/></svg>
+          </div>
+          <h3>Cross-page Navigation</h3>
+          <p>Click #task references in messages to jump to the board. Click related messages in tasks to scroll right to them.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- How It Works -->
+  <section id="how-it-works" style="background: var(--surface-low);">
+    <div class="section-inner">
+      <div style="text-align: center;">
+        <span class="section-label">How It Works</span>
+        <h2 class="section-title">Your data lives in GitHub</h2>
+        <p class="section-desc" style="margin: 0 auto;">
+          ProjectHive stores everything — tasks, messages, docs, config — as JSON files in a GitHub private repo. No server to host. Full version control. Access managed by GitHub permissions.
+        </p>
+      </div>
+      <div class="how-grid">
+        <div class="how-step">
+          <div class="how-num">1</div>
+          <h3>Sign in with GitHub</h3>
+          <p>Authenticate with your personal access token. ProjectHive connects to your GitHub account securely.</p>
+        </div>
+        <div class="how-step">
+          <div class="how-num">2</div>
+          <h3>Create or join a project</h3>
+          <p>Create a new project (auto-generates a private repo) or join an existing one. Invite collaborators by username.</p>
+        </div>
+        <div class="how-step">
+          <div class="how-num">3</div>
+          <h3>Collaborate</h3>
+          <p>Manage tasks, send messages, share files — everything syncs to GitHub. Your team sees updates in real time.</p>
+        </div>
+        <div class="how-step">
+          <div class="how-num">4</div>
+          <h3>Stay in control</h3>
+          <p>Full git history of every change. Switch themes, filter views, and customize your workspace.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Tech Stack -->
+  <section id="tech-stack">
+    <div class="section-inner">
+      <span class="section-label">Tech Stack</span>
+      <h2 class="section-title">Built with modern tools</h2>
+      <p class="section-desc">
+        A lean, fast desktop app with no backend dependencies beyond GitHub's API.
+      </p>
+      <div class="tech-pills">
+        <span class="tech-pill">Electron</span>
+        <span class="tech-pill">React 19</span>
+        <span class="tech-pill">Vite</span>
+        <span class="tech-pill">Tailwind CSS v4</span>
+        <span class="tech-pill">Zustand</span>
+        <span class="tech-pill">@octokit/rest</span>
+        <span class="tech-pill">@dnd-kit</span>
+        <span class="tech-pill">React Router</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section class="cta-section">
+    <h2>Ready to streamline your research?</h2>
+    <p>Download ProjectHive and start collaborating with your team today.</p>
+    <div class="hero-actions">
+      <a href="https://github.com/XC-Xinze/ProjecHive/releases" class="btn-primary">Download Latest Release</a>
+      <a href="https://github.com/XC-Xinze/ProjecHive" class="btn-secondary">Star on GitHub</a>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer>
+    <div class="footer-inner">
+      <a href="#" class="footer-brand">
+        <img src="logo.png" alt="" />
+        <span>ProjectHive</span>
+      </a>
+      <div class="footer-links">
+        <a href="https://github.com/XC-Xinze/ProjecHive">GitHub</a>
+        <a href="https://github.com/XC-Xinze/ProjecHive/releases">Releases</a>
+        <a href="https://github.com/XC-Xinze/ProjecHive/issues">Issues</a>
+      </div>
+    </div>
+  </footer>
+
+</body>
+</html>

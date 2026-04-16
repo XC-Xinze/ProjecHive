@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useStore } from '../store'
-import { loadMessages, createMessage, getCollaborators, listDirectory, getFileContent, updateFile, deleteFile, uploadAsset, getRawFileBase64 } from '../services/github'
+import { loadMessages, createMessage, createDoc, getCollaborators, listDirectory, getFileContent, updateFile, deleteFile, uploadAsset, getRawFileBase64 } from '../services/github'
 
 const LABELS = [
   { key: 'question', label: 'Question', color: 'bg-blue-100 text-blue-700' },
@@ -18,6 +18,8 @@ const REACTION_EMOJIS = ['\u{1F44D}', '\u{1F44E}', '\u{2764}\u{FE0F}', '\u{1F604
 export default function Messages() {
   const { owner, repo, currentUser, markMsgRead } = useStore()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const highlightMsgId = searchParams.get('highlight')
   const [messages, setMessages] = useState([])
   const [members, setMembers] = useState([])
   const [loading, setLoading] = useState(true)
@@ -51,6 +53,23 @@ export default function Messages() {
     pollRef.current = setInterval(() => silentRefresh(), 30000)
     return () => clearInterval(pollRef.current)
   }, [owner, repo])
+
+  // Scroll to highlighted message
+  useEffect(() => {
+    if (!loading && highlightMsgId) {
+      // Clear filter so the message is visible
+      setFilter('all')
+      setTimeout(() => {
+        const el = document.getElementById(`msg-${highlightMsgId}`)
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+          el.classList.add('ring-2', 'ring-primary')
+          setTimeout(() => el.classList.remove('ring-2', 'ring-primary'), 3000)
+        }
+        setSearchParams({}, { replace: true })
+      }, 100)
+    }
+  }, [loading, highlightMsgId])
 
   async function loadAll() {
     setLoading(true)
@@ -225,6 +244,16 @@ export default function Messages() {
       })
       const result = await uploadAsset(owner, repo, file.name, base64)
       setAttachments((prev) => [...prev, { name: file.name, path: result.path }])
+      // Also register in docs
+      const ext = file.name.split('.').pop().toLowerCase()
+      const imgExts = ['png','jpg','jpeg','gif','webp','svg']
+      await createDoc(owner, repo, {
+        title: file.name,
+        url: result.path,
+        type: imgExts.includes(ext) ? 'image' : 'document',
+        description: 'Uploaded via Messages',
+        sharedBy: currentUser?.login || 'unknown',
+      })
     } catch (err) {
       alert(`Upload failed: ${err.message}`)
     } finally {
@@ -509,7 +538,7 @@ function MessageCard({
   const reactionEntries = Object.entries(reactions).filter(([, users]) => users.length > 0)
 
   return (
-    <div className="bg-surface-card rounded-xl shadow-card p-4 hover:shadow-lifted transition-all group relative">
+    <div id={`msg-${msg.id}`} className="bg-surface-card rounded-xl shadow-card p-4 hover:shadow-lifted transition-all group relative">
       {/* Top-right actions (visible on hover) */}
       <div className="absolute top-3 right-3 flex items-center gap-1">
         <button
@@ -772,7 +801,7 @@ function renderBody(text, taskList, onNavigate) {
         <span
           key={i}
           className="bg-primary-surface text-primary rounded px-1.5 py-0.5 text-xs font-medium cursor-pointer hover:underline"
-          onClick={(e) => { e.stopPropagation(); onNavigate?.('/board') }}
+          onClick={(e) => { e.stopPropagation(); onNavigate?.(`/board?task=${encodeURIComponent(refName)}`) }}
         >
           {part}
         </span>

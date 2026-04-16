@@ -347,9 +347,10 @@ export default function Timeline() {
 
 // Detect auto-generated commits from Board, Messages, Docs, and init
 const SYSTEM_PATTERNS = [
-  /^\[task\] (Create|Move|Delete) "/,    // Board: create/move/delete tasks
+  /^\[task\] /,                          // Board: create/move/delete/update tasks
   /^\[discuss\] /,                       // Messages: all message commits
-  /^\[doc\] (Share|Initialize) /,        // Docs: share links; Init: bootstrap
+  /^\[doc\] /,                           // Docs: share/init/delete
+  /^\[attach\] /,                        // File uploads
   /^Initial commit$/,                    // GitHub auto-init
 ]
 
