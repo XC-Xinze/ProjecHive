@@ -1,0 +1,130 @@
+@import "tailwindcss";
+
+/* ── Design Tokens: "The Serene Architect" ── */
+:root {
+  /* Primary — Indigo */
+  --color-primary: #4456ba;
+  --color-primary-light: #8596ff;
+  --color-primary-dim: #3a4a9e;
+  --color-primary-surface: #eef0ff;
+
+  /* Secondary — Sage Green */
+  --color-secondary: #4a6800;
+  --color-secondary-light: #bae26e;
+
+  /* Surfaces — Warm Tonal Layers */
+  --color-surface: #f9f9f7;
+  --color-surface-low: #f1f1ee;
+  --color-surface-card: #ffffff;
+  --color-surface-highest: #e8e8e4;
+
+  /* Text */
+  --color-on-surface: #2f3332;
+  --color-on-surface-variant: #6b706e;
+  --color-on-surface-dim: #9ca19f;
+
+  /* Accents */
+  --color-error: #a83836;
+  --color-error-surface: #fef2f2;
+  --color-warning: #b8860b;
+  --color-warning-surface: #fef9ee;
+
+  /* Elevation */
+  --shadow-card: 0 1px 3px rgba(47, 51, 50, 0.04);
+  --shadow-lifted: 0 8px 30px rgba(47, 51, 50, 0.08);
+  --shadow-float: 0 12px 40px rgba(47, 51, 50, 0.12);
+
+  /* Fonts (overridden per theme) */
+  --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-display: 'Manrope', 'Inter', sans-serif;
+}
+
+/* ── Base ── */
+body {
+  margin: 0;
+  font-family: var(--font-body);
+  color: var(--color-on-surface);
+  background: var(--color-surface);
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-display);
+}
+
+/* ── Smooth Transitions ── */
+*, *::before, *::after {
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-surface-highest);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-on-surface-dim);
+}
+
+/* ── Custom Utilities ── */
+@utility font-display {
+  font-family: var(--font-display);
+}
+
+@utility text-on-surface {
+  color: var(--color-on-surface);
+}
+
+@utility text-on-surface-variant {
+  color: var(--color-on-surface-variant);
+}
+
+@utility text-on-surface-dim {
+  color: var(--color-on-surface-dim);
+}
+
+@utility bg-surface {
+  background-color: var(--color-surface);
+}
+
+@utility bg-surface-low {
+  background-color: var(--color-surface-low);
+}
+
+@utility bg-surface-card {
+  background-color: var(--color-surface-card);
+}
+
+@utility bg-primary {
+  background-color: var(--color-primary);
+}
+
+@utility bg-primary-surface {
+  background-color: var(--color-primary-surface);
+}
+
+@utility text-primary {
+  color: var(--color-primary);
+}
+
+@utility shadow-card {
+  box-shadow: var(--shadow-card);
+}
+
+@utility shadow-lifted {
+  box-shadow: var(--shadow-lifted);
+}
+
+@utility shadow-float {
+  box-shadow: var(--shadow-float);
+}
+
+@utility gradient-primary {
+  background: linear-gradient(135deg, var(--color-primary), var(--color-primary-light));
+}
