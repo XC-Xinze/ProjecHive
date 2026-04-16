@@ -13,6 +13,9 @@ function loadReadNotifs() {
 function loadAuth() {
   try { return JSON.parse(localStorage.getItem(AUTH_KEY)) } catch { return null }
 }
+function loadUser() {
+  try { return JSON.parse(localStorage.getItem('gitsync-user')) } catch { return null }
+}
 function loadProject() {
   try { return JSON.parse(localStorage.getItem(PROJECT_KEY)) } catch { return null }
 }
@@ -29,12 +32,16 @@ export const useStore = create((set) => ({
   logout: () => {
     localStorage.removeItem(AUTH_KEY)
     localStorage.removeItem(PROJECT_KEY)
+    localStorage.removeItem('gitsync-user')
     set({ token: '', isLoggedIn: false, owner: '', repo: '', currentUser: null })
   },
 
   // Current GitHub user
-  currentUser: null,
-  setCurrentUser: (user) => set({ currentUser: user }),
+  currentUser: loadUser(),
+  setCurrentUser: (user) => {
+    localStorage.setItem('gitsync-user', JSON.stringify(user))
+    set({ currentUser: user })
+  },
 
   // Current project
   owner: loadProject()?.owner || '',

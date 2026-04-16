@@ -154,9 +154,9 @@ export default function Layout() {
   const unreadNotifCount = notifications.filter((n) => !readNotifIds.includes(n.id)).length
 
   return (
-    <div className="min-h-screen bg-surface flex">
+    <div className="h-screen bg-surface flex overflow-hidden">
       {/* Sidebar */}
-      <aside className="w-56 bg-surface-low flex flex-col shrink-0">
+      <aside className="w-56 bg-surface-low flex flex-col shrink-0 h-full">
         {/* macOS drag region */}
         <div className="h-8 shrink-0" style={{ WebkitAppRegion: 'drag' }} />
 
@@ -308,7 +308,7 @@ export default function Layout() {
           </div>
         </div>
 
-        <nav className="flex-1 px-1 space-y-0.5">
+        <nav className="flex-1 px-1 space-y-0.5 overflow-y-auto">
           {navItems.map(({ to, label, icon: Icon, badge }) => (
             <NavLink
               key={to}

@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useStore } from '../store'
 import { loadMessages, createMessage, getCollaborators, listDirectory, getFileContent, updateFile, deleteFile, uploadAsset, getRawFileBase64 } from '../services/github'
 
@@ -16,6 +17,7 @@ const REACTION_EMOJIS = ['\u{1F44D}', '\u{1F44E}', '\u{2764}\u{FE0F}', '\u{1F604
 
 export default function Messages() {
   const { owner, repo, currentUser, markMsgRead } = useStore()
+  const navigate = useNavigate()
   const [messages, setMessages] = useState([])
   const [members, setMembers] = useState([])
   const [loading, setLoading] = useState(true)
@@ -258,10 +260,26 @@ export default function Messages() {
     repliesByParent[key].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))
   }
 
+  // Helper: check if a message mentions me
+  const meLower = me?.toLowerCase()
+  function mentionsMe(m) {
+    if (!meLower) return false
+    return m.mentions?.some((u) => u.toLowerCase() === meLower) ||
+      m.body?.toLowerCase().includes(`@${meLower}`)
+  }
+
+  // For @Me filter, also surface parent messages whose replies mention me
+  const parentIdsWithMentionedReplies = new Set()
+  if (filter === 'mentions') {
+    for (const r of allReplies) {
+      if (mentionsMe(r) && r.replyTo) parentIdsWithMentionedReplies.add(r.replyTo)
+    }
+  }
+
   // Apply filters to top-level messages
   const filtered = topLevel.filter((m) => {
     if (filter === 'mine') return m.author === me
-    if (filter === 'mentions') return m.mentions?.includes(me) || m.body?.includes(`@${me}`)
+    if (filter === 'mentions') return mentionsMe(m) || parentIdsWithMentionedReplies.has(m.id)
     if (filter.startsWith('label-')) return m.label === filter.slice(6)
     return true
   })
@@ -420,6 +438,7 @@ export default function Messages() {
                 me={me}
                 owner={owner}
                 repo={repo}
+                navigate={navigate}
                 repliesByParent={repliesByParent}
                 expandedThread={expandedThread}
                 setExpandedThread={setExpandedThread}
@@ -451,6 +470,7 @@ export default function Messages() {
               me={me}
               owner={owner}
               repo={repo}
+              navigate={navigate}
               taskList={availableTasks}
               repliesByParent={repliesByParent}
               expandedThread={expandedThread}
@@ -477,7 +497,7 @@ export default function Messages() {
 // ── Message Card Component ──
 
 function MessageCard({
-  msg, me, owner, repo, taskList, repliesByParent, expandedThread, setExpandedThread,
+  msg, me, owner, repo, taskList, navigate, repliesByParent, expandedThread, setExpandedThread,
   threadReplyBody, setThreadReplyBody, threadPosting, handleThreadReply,
   togglePin, toggleReaction, reactionPickerMsg, setReactionPickerMsg,
   onDelete,
@@ -528,7 +548,7 @@ function MessageCard({
             )}
           </div>
           <p className="text-sm text-on-surface-variant whitespace-pre-wrap">
-            {renderBody(msg.body, taskList)}
+            {renderBody(msg.body, taskList, navigate)}
           </p>
           {msg.ref && (
             <div className="mt-2 inline-flex items-center gap-1 px-2 py-0.5 bg-surface-low rounded-lg text-xs text-on-surface-variant">
@@ -672,7 +692,7 @@ function MessageCard({
                       <span className="text-xs font-medium text-on-surface">{reply.author}</span>
                       <span className="text-[10px] text-on-surface-dim">{formatTime(reply.createdAt)}</span>
                     </div>
-                    <p className="text-xs text-on-surface-variant whitespace-pre-wrap">{renderBody(reply.body, taskList)}</p>
+                    <p className="text-xs text-on-surface-variant whitespace-pre-wrap">{renderBody(reply.body, taskList, navigate)}</p>
                   </div>
                 </div>
               ))}
@@ -737,7 +757,7 @@ function TrashIcon({ className }) {
   )
 }
 
-function renderBody(text, taskList) {
+function renderBody(text, taskList, onNavigate) {
   const taskNames = (taskList || []).map((t) => t.title.toLowerCase())
   return text.split(/([@#]\S+)/g).map((part, i) => {
     if (part.startsWith('@'))
@@ -748,7 +768,15 @@ function renderBody(text, taskList) {
       if (!exists && taskList) {
         return <span key={i} className="bg-red-50 text-red-400 line-through rounded px-1.5 py-0.5 text-xs font-medium" title="Task deleted">{part}</span>
       }
-      return <span key={i} className="bg-primary-surface text-primary rounded px-1.5 py-0.5 text-xs font-medium">{part}</span>
+      return (
+        <span
+          key={i}
+          className="bg-primary-surface text-primary rounded px-1.5 py-0.5 text-xs font-medium cursor-pointer hover:underline"
+          onClick={(e) => { e.stopPropagation(); onNavigate?.('/board') }}
+        >
+          {part}
+        </span>
+      )
     }
     return part
   })

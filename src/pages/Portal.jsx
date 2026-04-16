@@ -25,15 +25,13 @@ export default function Portal() {
       try {
         const [readmeResult, configResult, collaborators, taskFiles] =
           await Promise.all([
-            getFileContent(owner, repo, 'README.md').catch(() => ({
-              content: '',
-            })),
+            getFileContent(owner, repo, 'README.md').catch(() => null),
             getConfig(owner, repo),
             getCollaborators(owner, repo),
             listDirectory(owner, repo, 'tasks'),
           ])
 
-        setMd(readmeResult.content)
+        if (readmeResult?.content != null) setMd(readmeResult.content)
         setConfig(configResult.config)
         setMemberCount(collaborators.length)
         setTaskCount(

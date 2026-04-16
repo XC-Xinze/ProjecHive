@@ -1,5 +1,5 @@
 import { Octokit } from '@octokit/rest'
-import { TEMPLATE_CONFIG, TEMPLATE_README, TEMPLATE_TASK, REPO_PREFIX } from './template'
+import { TEMPLATE_CONFIG, generateReadme, TEMPLATE_TASK, REPO_PREFIX } from './template'
 
 let octokit = null
 
@@ -64,7 +64,7 @@ export async function createProject(name, description, codeRepoUrl, isPrivate = 
     JSON.stringify(config, null, 2), '[doc] Initialize ProjectHive config')
   const sha = await getFileSha(repo.owner.login, repo.name, 'README.md')
   await updateFile(repo.owner.login, repo.name, 'README.md',
-    TEMPLATE_README.replace('# My Project', `# ${config.name}`),
+    generateReadme({ name: config.name, description: description, codeRepo: codeRepoUrl, owner: repo.owner.login }),
     '[doc] Initialize README', sha)
   await updateFile(repo.owner.login, repo.name, 'tasks/example.json',
     JSON.stringify(TEMPLATE_TASK, null, 2), '[task] Create example task')
@@ -220,7 +220,7 @@ export async function initializeRepo(owner, repo, projectName, codeRepoUrl) {
   // get its SHA if so, then create or update.
   const files = [
     { path: 'config.json', content: JSON.stringify(config, null, 2), msg: '[doc] Initialize ProjectHive config' },
-    { path: 'README.md', content: TEMPLATE_README.replace('# My Project', `# ${config.name}`), msg: '[doc] Initialize README' },
+    { path: 'README.md', content: generateReadme({ name: config.name, description: config.description, codeRepo: codeRepoUrl, owner }), msg: '[doc] Initialize README' },
     { path: 'tasks/example.json', content: JSON.stringify(TEMPLATE_TASK, null, 2), msg: '[task] Create example task' },
   ]
 

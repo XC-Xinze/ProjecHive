@@ -13,22 +13,42 @@ export const TEMPLATE_CONFIG = {
   members: [],
 }
 
-export const TEMPLATE_README = `# My Project
+export function generateReadme({ name, description, codeRepo, owner }) {
+  const repoLine = codeRepo
+    ? `| Code Repository | [${codeRepo.replace(/https?:\/\/github\.com\//, '')}](${codeRepo}) |`
+    : '| Code Repository | _Not linked yet_ |'
+  const ownerLine = owner
+    ? `| Created by | [@${owner}](https://github.com/${owner}) |`
+    : ''
 
-> Managed by [ProjectHive](https://github.com)
+  return `# ${name}
 
-## About
+> Managed with [ProjectHive](https://github.com/XC-Xinze/ProjecHive)
 
-Write your project introduction here.
+## Overview
 
-## Code Repository
+${description || 'Write your project introduction here.'}
 
-_(Set in config.json)_
+## Project Info
 
-## Members
+| | |
+|---|---|
+${repoLine}
+${ownerLine}
+| Status | Active |
+| Created | ${new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })} |
 
-_(Managed via ProjectHive)_
+## Getting Started
+
+1. Use the **Board** tab to create and manage tasks
+2. Use **Messages** to discuss with your team
+3. Share documents and links in the **Docs** tab
+
+---
+
+<sub>This project is powered by [ProjectHive](https://github.com/XC-Xinze/ProjecHive) — collaborative project management backed by GitHub.</sub>
 `
+}
 
 export const TEMPLATE_TASK = {
   id: 'task-example',

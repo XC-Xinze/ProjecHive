@@ -1,11 +1,14 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   DndContext,
   DragOverlay,
   PointerSensor,
   useSensor,
   useSensors,
-  closestCenter,
+  useDroppable,
+  pointerWithin,
+  rectIntersection,
 } from '@dnd-kit/core'
 import {
   SortableContext,
@@ -39,6 +42,7 @@ function isOverdue(dateStr) {
 
 export default function Board() {
   const { owner, repo, currentUser } = useStore()
+  const navigate = useNavigate()
   const [tasks, setTasks] = useState([])
   const [members, setMembers] = useState([])
   const [loading, setLoading] = useState(true)
@@ -383,7 +387,7 @@ export default function Board() {
 
       <DndContext
         sensors={sensors}
-        collisionDetection={closestCenter}
+        collisionDetection={rectIntersection}
         onDragStart={handleDragStart}
         onDragEnd={handleDragEnd}
       >
@@ -431,6 +435,7 @@ export default function Board() {
           members={members}
           owner={owner}
           repo={repo}
+          navigate={navigate}
           onClose={() => setSelectedTask(null)}
           onComplete={(taskId) => { moveTask(taskId, 'done'); setSelectedTask(null) }}
           onReopen={(taskId) => { moveTask(taskId, 'todo'); setSelectedTask(null) }}
@@ -442,10 +447,10 @@ export default function Board() {
 }
 
 function Column({ column, tasks, syncing, onDelete, onTaskClick, onComplete }) {
-  const { setNodeRef } = useSortable({ id: column.id })
+  const { setNodeRef, isOver } = useDroppable({ id: column.id })
 
   return (
-    <div ref={setNodeRef} className="min-h-[200px]">
+    <div ref={setNodeRef} className={`min-h-[200px] rounded-xl p-2 -m-2 transition-colors ${isOver ? 'bg-primary-surface/40' : ''}`}>
       <div className="flex items-center gap-2.5 mb-4">
         <span className={`w-2 h-2 rounded-full ${column.dot}`} />
         <span className="font-display font-semibold text-sm text-on-surface">
@@ -472,23 +477,25 @@ function Column({ column, tasks, syncing, onDelete, onTaskClick, onComplete }) {
 }
 
 function TaskCard({ task, isDragging, isSyncing, onDelete, onClick, onComplete }) {
-  const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: task.id })
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging: isSortDragging } = useSortable({ id: task.id })
   const pointerStartRef = useRef(null)
 
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,
+    opacity: isSortDragging ? 0.5 : 1,
   }
 
   function handlePointerDown(e) {
     pointerStartRef.current = { x: e.clientX, y: e.clientY }
+    // Forward to dnd-kit listener
+    listeners?.onPointerDown?.(e)
   }
 
   function handlePointerUp(e) {
     if (!pointerStartRef.current) return
     const dx = Math.abs(e.clientX - pointerStartRef.current.x)
     const dy = Math.abs(e.clientY - pointerStartRef.current.y)
-    // Only fire click if pointer didn't move much (not a drag)
     if (dx < 5 && dy < 5 && onClick) {
       onClick()
     }
@@ -503,7 +510,6 @@ function TaskCard({ task, isDragging, isSyncing, onDelete, onClick, onComplete }
       ref={setNodeRef}
       style={style}
       {...attributes}
-      {...listeners}
       onPointerDown={handlePointerDown}
       onPointerUp={handlePointerUp}
       className={`group bg-surface-card rounded-xl p-3.5 cursor-grab active:cursor-grabbing ${
@@ -586,7 +592,7 @@ function TaskCard({ task, isDragging, isSyncing, onDelete, onClick, onComplete }
   )
 }
 
-function TaskDetailModal({ task, members = [], owner, repo, onClose, onComplete, onReopen, onSave }) {
+function TaskDetailModal({ task, members = [], owner, repo, navigate, onClose, onComplete, onReopen, onSave }) {
   const column = COLUMNS.find((c) => c.id === task.status)
   const overdue = task.dueDate && task.status !== 'done' && isOverdue(task.dueDate)
   const isDone = task.status === 'done'
@@ -948,13 +954,17 @@ function TaskDetailModal({ task, members = [], owner, repo, onClose, onComplete,
             ) : relatedMsgs.length > 0 ? (
               <div className="space-y-1.5 max-h-40 overflow-y-auto">
                 {relatedMsgs.map((m) => (
-                  <div key={m.id} className="flex items-start gap-2 p-2 bg-surface-low rounded-lg">
+                  <button
+                    key={m.id}
+                    onClick={() => { onClose(); navigate('/messages') }}
+                    className="w-full flex items-start gap-2 p-2 bg-surface-low rounded-lg text-left hover:shadow-card transition-all cursor-pointer"
+                  >
                     <img src={`https://github.com/${m.author}.png?size=24`} alt="" className="w-5 h-5 rounded-full shrink-0 mt-0.5" />
                     <div className="min-w-0 flex-1">
                       <p className="text-xs text-on-surface truncate">{m.body}</p>
                       <p className="text-[10px] text-on-surface-dim">{m.author} · {new Date(m.createdAt).toLocaleDateString()}</p>
                     </div>
-                  </div>
+                  </button>
                 ))}
               </div>
             ) : (
