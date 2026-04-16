@@ -75,7 +75,7 @@ export default function Settings() {
           </div>
 
           <div className="space-y-3">
-            <InfoRow label="Version" value="v1.0.1" />
+            <InfoRow label="Version" value="v1.0.2" />
             <InfoRow label="Platform" value="Electron + React + Vite" />
             <InfoRow label="Backend" value="GitHub Private Repository" />
             {currentUser && (
