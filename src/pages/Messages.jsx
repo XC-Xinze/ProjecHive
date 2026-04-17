@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useStore } from '../store'
 import { loadMessages, createMessage, createDoc, getCollaborators, listDirectory, getFileContent, updateFile, deleteFile, uploadAsset, getRawFileBase64 } from '../services/github'
 import { detectFileType } from '../utils/fileTypes'
+import FilePicker from '../components/FilePicker'
 
 const LABELS = [
   { key: 'question', label: 'Question', color: 'bg-blue-100 text-blue-700' },
@@ -40,6 +41,7 @@ export default function Messages() {
   // Attachments
   const [attachments, setAttachments] = useState([]) // [{name, path}]
   const [uploading, setUploading] = useState(false)
+  const [showFilePicker, setShowFilePicker] = useState(false)
   const fileInputRef = useRef(null)
 
   // Reactions & threads
@@ -399,6 +401,12 @@ export default function Messages() {
               {uploading ? 'Uploading...' : '+ File'}
             </button>
 
+            {/* Reference file from repo */}
+            <button type="button" onClick={() => setShowFilePicker(true)}
+              className="px-2 py-1 text-xs bg-surface-low text-on-surface-variant rounded-lg hover:shadow-card cursor-pointer">
+              Ref
+            </button>
+
             {/* Ref picker */}
             <select value={refType} onChange={(e) => setRefType(e.target.value)}
               className="text-xs bg-surface-low border-0 rounded-lg px-2 py-1 text-on-surface-variant">
@@ -517,6 +525,20 @@ export default function Messages() {
         </div>
       ) : (
         <div className="text-on-surface-dim text-sm text-center py-12">No messages yet.</div>
+      )}
+
+      {showFilePicker && (
+        <FilePicker
+          owner={owner}
+          repo={repo}
+          onSelect={(file) => {
+            setAttachments((prev) =>
+              prev.some((a) => a.path === file.path) ? prev : [...prev, file]
+            )
+            setShowFilePicker(false)
+          }}
+          onClose={() => setShowFilePicker(false)}
+        />
       )}
     </div>
   )

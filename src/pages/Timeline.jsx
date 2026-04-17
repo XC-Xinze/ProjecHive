@@ -1,12 +1,15 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useStore } from '../store'
-import { getCommits, getCommitDetail, updateFile, getFileContent, deleteCommitFromHistory } from '../services/github'
+import { getCommits, getCommitDetail, updateFile, getFileContent, deleteCommitFromHistory, getConfig, parseRepoUrl } from '../services/github'
 import { parseCommitMessage, COMMIT_KEYWORDS } from '../services/template'
 
 const POLL_INTERVAL = 30000 // 30s auto-refresh
 
 export default function Timeline() {
   const { owner, repo } = useStore()
+  const [viewMode, setViewMode] = useState('project') // 'project' | 'code'
+  const [codeRepos, setCodeRepos] = useState([]) // [{ owner, repo, url }]
+  const [selectedCodeRepo, setSelectedCodeRepo] = useState(null) // index
   const [commits, setCommits] = useState([])
   const [loading, setLoading] = useState(true)
   const [expandedSha, setExpandedSha] = useState(null)
@@ -18,18 +21,46 @@ export default function Timeline() {
   const [deletingSha, setDeletingSha] = useState(null)
   const pollRef = useRef(null)
 
+  // Resolve which repo we're reading commits from based on viewMode
+  const activeRepo =
+    viewMode === 'code' && codeRepos[selectedCodeRepo]
+      ? codeRepos[selectedCodeRepo]
+      : { owner, repo }
+
+  // Load linked code repos from the project config once
+  useEffect(() => {
+    let cancelled = false
+    getConfig(owner, repo).then(({ config }) => {
+      if (cancelled || !config) return
+      const urls = []
+      if (config.codeRepo) urls.push(config.codeRepo)
+      if (config.codeRepos?.length) {
+        config.codeRepos.forEach((u) => { if (u && !urls.includes(u)) urls.push(u) })
+      }
+      const parsed = urls.map((u) => ({ ...parseRepoUrl(u), url: u })).filter((p) => p.owner)
+      setCodeRepos(parsed)
+      if (parsed.length > 0) setSelectedCodeRepo(0)
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [owner, repo])
+
   // silent=true means don't show loading skeleton (for refreshes)
   const loadCommits = useCallback(async (silent = false) => {
     if (!silent) setLoading(true)
     try {
-      const data = await getCommits(owner, repo, { perPage: 50 })
+      const data = await getCommits(activeRepo.owner, activeRepo.repo, { perPage: 50 })
       setCommits(data)
-    } catch { /* ignore refresh errors */ }
+    } catch { setCommits([]) }
     if (!silent) setLoading(false)
-  }, [owner, repo])
+  }, [activeRepo.owner, activeRepo.repo])
 
-  // Initial load + auto-poll for collaborator updates
+  // Reload when active repo changes; poll for refreshes
   useEffect(() => {
+    setCommits([])
+    setDetails({})
+    setExpandedSha(null)
+    setFilterUser(null)
+    setFilterKeyword(null)
     loadCommits(false)
     pollRef.current = setInterval(() => loadCommits(true), POLL_INTERVAL)
     return () => clearInterval(pollRef.current)
@@ -42,7 +73,7 @@ export default function Timeline() {
     }
     setExpandedSha(sha)
     if (!details[sha]) {
-      const data = await getCommitDetail(owner, repo, sha)
+      const data = await getCommitDetail(activeRepo.owner, activeRepo.repo, sha)
       setDetails((prev) => ({ ...prev, [sha]: data }))
     }
   }
@@ -72,11 +103,13 @@ export default function Timeline() {
     commits.map((c) => parseCommitMessage(c.commit.message.split('\n')[0]).keyword).filter(Boolean)
   )]
 
+  const isCodeView = viewMode === 'code'
+
   const filtered = commits.filter((c) => {
     const firstLine = c.commit.message.split('\n')[0]
-    if (hideSystem && isSystemCommit(firstLine)) return false
+    if (!isCodeView && hideSystem && isSystemCommit(firstLine)) return false
     if (filterUser && c.author?.login !== filterUser) return false
-    if (filterKeyword) {
+    if (!isCodeView && filterKeyword) {
       const { keyword } = parseCommitMessage(firstLine)
       if (keyword !== filterKeyword) return false
     }
@@ -99,15 +132,75 @@ export default function Timeline() {
     <div className="p-8 max-w-4xl">
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-xl font-bold text-on-surface font-display">Timeline</h2>
-        <button
-          onClick={() => setShowCompose(!showCompose)}
-          className="px-3 py-1.5 gradient-primary text-white text-sm rounded-full hover:opacity-90 transition-opacity cursor-pointer"
-        >
-          + New Post
-        </button>
+        {!isCodeView && (
+          <button
+            onClick={() => setShowCompose(!showCompose)}
+            className="px-3 py-1.5 gradient-primary text-white text-sm rounded-full hover:opacity-90 transition-opacity cursor-pointer"
+          >
+            + New Post
+          </button>
+        )}
       </div>
 
-      {showCompose && (
+      {/* View mode tabs */}
+      <div className="flex items-center gap-2 mb-4 flex-wrap">
+        <button
+          onClick={() => setViewMode('project')}
+          className={`px-3 py-1.5 text-xs rounded-full cursor-pointer transition-all ${
+            !isCodeView ? 'gradient-primary text-white' : 'bg-surface-card text-on-surface-variant shadow-card hover:shadow-lifted'
+          }`}
+        >
+          ProjectHive Activity
+        </button>
+        <button
+          onClick={() => setViewMode('code')}
+          disabled={codeRepos.length === 0}
+          title={codeRepos.length === 0 ? 'No linked code repository' : ''}
+          className={`px-3 py-1.5 text-xs rounded-full cursor-pointer transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
+            isCodeView ? 'gradient-primary text-white' : 'bg-surface-card text-on-surface-variant shadow-card hover:shadow-lifted'
+          }`}
+        >
+          Code Repo Activity
+        </button>
+
+        {/* Code repo selector — only when in code mode and >1 repo */}
+        {isCodeView && codeRepos.length > 1 && (
+          <>
+            <span className="w-px h-5 bg-on-surface-dim/20 mx-1" />
+            {codeRepos.map((r, i) => (
+              <button
+                key={r.url}
+                onClick={() => setSelectedCodeRepo(i)}
+                className={`px-2.5 py-1 text-[11px] rounded-full cursor-pointer transition-all font-mono ${
+                  selectedCodeRepo === i
+                    ? 'bg-primary-surface text-primary'
+                    : 'bg-surface-card text-on-surface-dim'
+                }`}
+              >
+                {r.owner}/{r.repo}
+              </button>
+            ))}
+          </>
+        )}
+        {isCodeView && codeRepos[selectedCodeRepo] && (
+          <a
+            href={`https://github.com/${activeRepo.owner}/${activeRepo.repo}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(e) => {
+              if (window.electronAPI?.openExternal) {
+                e.preventDefault()
+                window.electronAPI.openExternal(e.currentTarget.href)
+              }
+            }}
+            className="ml-auto text-[11px] text-on-surface-dim hover:text-primary cursor-pointer"
+          >
+            View on GitHub →
+          </a>
+        )}
+      </div>
+
+      {showCompose && !isCodeView && (
         <ComposeBar
           owner={owner}
           repo={repo}
@@ -139,18 +232,20 @@ export default function Timeline() {
 
       {/* Filters */}
       <div className="space-y-3 mb-6">
-        {/* System toggle */}
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-on-surface-dim w-14 shrink-0">Filter:</span>
-          <button
-            onClick={() => setHideSystem(!hideSystem)}
-            className={`px-2.5 py-1 text-xs rounded-full transition-colors cursor-pointer ${
-              hideSystem ? 'gradient-primary text-white' : 'bg-surface-card text-on-surface-variant shadow-card hover:shadow-lifted'
-            }`}
-          >
-            Hide system activity
-          </button>
-        </div>
+        {/* System toggle — only meaningful in project view */}
+        {!isCodeView && (
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-on-surface-dim w-14 shrink-0">Filter:</span>
+            <button
+              onClick={() => setHideSystem(!hideSystem)}
+              className={`px-2.5 py-1 text-xs rounded-full transition-colors cursor-pointer ${
+                hideSystem ? 'gradient-primary text-white' : 'bg-surface-card text-on-surface-variant shadow-card hover:shadow-lifted'
+              }`}
+            >
+              Hide system activity
+            </button>
+          </div>
+        )}
 
         {/* Author filter */}
         {authors.length > 0 && (
@@ -179,8 +274,8 @@ export default function Timeline() {
           </div>
         )}
 
-        {/* Keyword filter */}
-        {usedKeywords.length > 0 && (
+        {/* Keyword filter — only meaningful in project view */}
+        {!isCodeView && usedKeywords.length > 0 && (
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-xs text-on-surface-dim w-14 shrink-0">Type:</span>
             <button
@@ -237,8 +332,8 @@ export default function Timeline() {
                   className="bg-surface-card rounded-xl shadow-card p-5 hover:shadow-lifted transition-shadow cursor-pointer group/card relative"
                   onClick={() => toggleDetail(commit.sha)}
                 >
-                  {/* Delete commit button */}
-                  {!commit.sha.startsWith('pending-') && (
+                  {/* Delete commit button — only in project view */}
+                  {!isCodeView && !commit.sha.startsWith('pending-') && (
                     <button
                       onClick={(e) => handleDeleteCommit(commit.sha, e)}
                       disabled={deletingSha === commit.sha}

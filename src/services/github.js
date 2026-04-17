@@ -139,6 +139,17 @@ export async function getCommitDetail(owner, repo, ref) {
   return data
 }
 
+// Get full file tree (recursive). Returns list of { path, type, sha, size }.
+export async function getRepoTree(owner, repo) {
+  const kit = getOctokit()
+  const { data: repoData } = await kit.repos.get({ owner, repo })
+  const { data: refData } = await kit.git.getRef({ owner, repo, ref: `heads/${repoData.default_branch}` })
+  const { data } = await kit.git.getTree({
+    owner, repo, tree_sha: refData.object.sha, recursive: '1',
+  })
+  return data.tree.filter((t) => t.type === 'blob')
+}
+
 // Get repo collaborators
 export async function getCollaborators(owner, repo) {
   try {
@@ -334,14 +345,20 @@ export async function deleteCommitFromHistory(owner, repo, targetSha) {
 }
 
 // Fetch commits from an external repo (code repo) using the same token
-export async function getExternalCommits(repoUrl, { perPage = 3 } = {}) {
-  if (!repoUrl) return []
+// Parse a GitHub repo URL into { owner, repo }, or null if it's not a valid github.com URL.
+export function parseRepoUrl(repoUrl) {
+  if (!repoUrl) return null
   const match = repoUrl.match(/github\.com\/([^/]+)\/([^/\s]+?)(?:\.git)?$/)
-  if (!match) return []
+  return match ? { owner: match[1], repo: match[2] } : null
+}
+
+export async function getExternalCommits(repoUrl, { perPage = 3 } = {}) {
+  const parsed = parseRepoUrl(repoUrl)
+  if (!parsed) return []
   try {
     const { data } = await getOctokit().repos.listCommits({
-      owner: match[1],
-      repo: match[2],
+      owner: parsed.owner,
+      repo: parsed.repo,
       per_page: perPage,
     })
     return data
