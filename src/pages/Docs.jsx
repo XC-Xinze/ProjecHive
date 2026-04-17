@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from 'react'
 import { useStore } from '../store'
-import { loadDocs, createDoc, getFileContent, deleteFile, uploadAsset } from '../services/github'
+import { loadDocs, createDoc, getFileContent, deleteFile, uploadAsset, getRawFileBase64 } from '../services/github'
+import { detectFileType, getMimeType, isUploadedAsset } from '../utils/fileTypes'
 
 const TYPE_OPTIONS = [
   { value: 'link', label: 'Link', icon: '🔗' },
@@ -51,6 +52,38 @@ export default function Docs() {
     }
   }
 
+  async function handleDocOpen(doc) {
+    if (!isUploadedAsset(doc.url)) {
+      // External URL — open in system browser
+      if (window.electronAPI?.openExternal) {
+        window.electronAPI.openExternal(doc.url)
+      } else {
+        window.open(doc.url, '_blank', 'noopener')
+      }
+      return
+    }
+    // Repo-relative path — fetch from GitHub and open with system default app
+    try {
+      const { content, name } = await getRawFileBase64(owner, repo, doc.url)
+      const raw = content.replace(/\n/g, '')
+      if (window.electronAPI?.openFile) {
+        await window.electronAPI.openFile(raw, name)
+      } else {
+        const binary = atob(raw)
+        const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0))
+        const blob = new Blob([bytes], { type: getMimeType(name) })
+        const blobUrl = URL.createObjectURL(blob)
+        const link = document.createElement('a')
+        link.href = blobUrl
+        link.download = name
+        link.click()
+        URL.revokeObjectURL(blobUrl)
+      }
+    } catch (err) {
+      alert(`Failed to open file: ${err.message}`)
+    }
+  }
+
   async function handleDelete(doc) {
     if (!confirm(`Delete "${doc.title}"?`)) return
     setDocs((prev) => prev.filter((d) => d.id !== doc.id))
@@ -81,6 +114,7 @@ export default function Docs() {
       const result = await uploadAsset(owner, repo, file.name, base64)
       setUrl(result.path)
       setTitle((prev) => prev || file.name)
+      setType(detectFileType(file.name))
     } catch (err) {
       alert(`Upload failed: ${err.message}`)
     } finally {
@@ -167,7 +201,7 @@ export default function Docs() {
         <div className="space-y-2">
           {filtered.map((doc) => (
             <div key={doc.id} className="bg-surface-card rounded-xl shadow-card p-4 hover:shadow-lifted transition-all group relative">
-              <a href={doc.url} target="_blank" rel="noopener noreferrer" className="flex items-start gap-3">
+              <button onClick={() => handleDocOpen(doc)} className="w-full flex items-start gap-3 text-left cursor-pointer">
                 <span className="text-xl mt-0.5">{TYPE_OPTIONS.find((t) => t.value === doc.type)?.icon || '📎'}</span>
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium text-on-surface truncate">{doc.title}</p>
@@ -180,7 +214,7 @@ export default function Docs() {
                   </div>
                 </div>
                 <span className="text-xs text-on-surface-dim font-mono truncate max-w-[200px] shrink-0">{doc.url}</span>
-              </a>
+              </button>
               {/* Delete button */}
               <button
                 onClick={(e) => { e.stopPropagation(); handleDelete(doc) }}

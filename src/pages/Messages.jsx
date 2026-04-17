@@ -2,6 +2,7 @@ import { useEffect, useState, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useStore } from '../store'
 import { loadMessages, createMessage, createDoc, getCollaborators, listDirectory, getFileContent, updateFile, deleteFile, uploadAsset, getRawFileBase64 } from '../services/github'
+import { detectFileType } from '../utils/fileTypes'
 
 const LABELS = [
   { key: 'question', label: 'Question', color: 'bg-blue-100 text-blue-700' },
@@ -245,12 +246,10 @@ export default function Messages() {
       const result = await uploadAsset(owner, repo, file.name, base64)
       setAttachments((prev) => [...prev, { name: file.name, path: result.path }])
       // Also register in docs
-      const ext = file.name.split('.').pop().toLowerCase()
-      const imgExts = ['png','jpg','jpeg','gif','webp','svg']
       await createDoc(owner, repo, {
         title: file.name,
         url: result.path,
-        type: imgExts.includes(ext) ? 'image' : 'document',
+        type: detectFileType(file.name),
         description: 'Uploaded via Messages',
         sharedBy: currentUser?.login || 'unknown',
       })
