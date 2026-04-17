@@ -133,6 +133,16 @@ export async function getCommits(owner, repo, { perPage = 30, page = 1 } = {}) {
   return data
 }
 
+// Get the latest commit SHA on the default branch (lightweight HEAD probe)
+export async function getLatestCommitSha(owner, repo) {
+  try {
+    const { data } = await getOctokit().repos.listCommits({ owner, repo, per_page: 1 })
+    return data[0]?.sha || null
+  } catch {
+    return null
+  }
+}
+
 // Get single commit detail (files changed)
 export async function getCommitDetail(owner, repo, ref) {
   const { data } = await getOctokit().repos.getCommit({ owner, repo, ref })

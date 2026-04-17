@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { useStore } from '../store'
-import { loadMessages, listGitSyncRepos, getConfig, isRepoInitialized, initializeRepo, listDirectory, getFileContent } from '../services/github'
+import { loadMessages, listGitSyncRepos, getConfig, isRepoInitialized, initializeRepo, listDirectory, getFileContent, getLatestCommitSha } from '../services/github'
 
 const navItems = [
   { to: '/', label: 'Overview', icon: HomeIcon },
@@ -36,8 +36,16 @@ export default function Layout() {
   const [showNotifs, setShowNotifs] = useState(false)
   const notifRef = useRef(null)
 
-  // Sync animation
-  const [syncing, setSyncing] = useState(false)
+  // Sync animation + remote update detection
+  const shaKey = `projecthive-sha-${owner}-${repo}`
+  const syncFlagKey = 'projecthive-syncing'
+  const [syncing, setSyncing] = useState(() =>
+    typeof sessionStorage !== 'undefined' && sessionStorage.getItem(syncFlagKey) === '1'
+  )
+  const [pendingUpdate, setPendingUpdate] = useState(false)
+  const lastSeenShaRef = useRef(
+    typeof localStorage !== 'undefined' ? localStorage.getItem(shaKey) : null
+  )
 
   // ── Derive notifications from messages + tasks ──
   const deriveNotifications = useCallback((msgs, tasks) => {
@@ -77,13 +85,14 @@ export default function Layout() {
     return notifs.slice(0, 20)
   }, [me])
 
-  // ── Poll for messages + tasks (unread count + notifications) ──
+  // ── Poll for messages + tasks (unread count + notifications + remote SHA) ──
   useEffect(() => {
     async function poll() {
       try {
-        const [msgs, taskFiles] = await Promise.all([
+        const [msgs, taskFiles, latestSha] = await Promise.all([
           loadMessages(owner, repo),
           loadTasks(owner, repo),
+          getLatestCommitSha(owner, repo),
         ])
 
         // Unread message count
@@ -95,6 +104,23 @@ export default function Layout() {
           const notifs = deriveNotifications(msgs, taskFiles)
           setNotifications(notifs)
         }
+
+        // Remote update detection
+        if (latestSha) {
+          const seen = lastSeenShaRef.current
+          if (!seen) {
+            // First successful poll — record baseline silently
+            lastSeenShaRef.current = latestSha
+            localStorage.setItem(shaKey, latestSha)
+          } else if (seen !== latestSha) {
+            setPendingUpdate(true)
+          }
+          // If we just finished a sync, clear the overlay flag once data lands
+          if (sessionStorage.getItem(syncFlagKey) === '1') {
+            sessionStorage.removeItem(syncFlagKey)
+            setSyncing(false)
+          }
+        }
       } catch {}
     }
 
@@ -103,7 +129,7 @@ export default function Layout() {
       pollRef.current = setInterval(poll, 30000)
       return () => clearInterval(pollRef.current)
     }
-  }, [owner, repo, lastMsgRead, me])
+  }, [owner, repo, lastMsgRead, me, shaKey])
 
   // Close panels on outside click
   useEffect(() => {
@@ -146,9 +172,21 @@ export default function Layout() {
     navigate('/')
   }
 
-  function handleSync() {
+  async function handleSync() {
     setSyncing(true)
-    setTimeout(() => window.location.reload(), 300)
+    setPendingUpdate(false)
+    sessionStorage.setItem(syncFlagKey, '1')
+    // Capture the latest remote SHA before reload so the post-reload poll
+    // recognizes the current state as "seen" instead of flagging it again.
+    try {
+      const latest = await getLatestCommitSha(owner, repo)
+      if (latest) {
+        lastSeenShaRef.current = latest
+        localStorage.setItem(shaKey, latest)
+      }
+    } catch {}
+    // Give GitHub a moment to propagate before reloading.
+    setTimeout(() => window.location.reload(), 1500)
   }
 
   const unreadNotifCount = notifications.filter((n) => !readNotifIds.includes(n.id)).length
@@ -341,17 +379,28 @@ export default function Layout() {
           <button
             onClick={handleSync}
             disabled={syncing}
-            className="w-full flex items-center justify-center gap-2 px-3 py-2 text-xs text-on-surface-dim hover:text-on-surface-variant hover:bg-surface rounded-lg transition-colors cursor-pointer disabled:opacity-50"
+            className="relative w-full flex items-center justify-center gap-2 px-3 py-2 text-xs text-on-surface-dim hover:text-on-surface-variant hover:bg-surface rounded-lg transition-colors cursor-pointer disabled:opacity-50"
           >
             <span className={syncing ? 'animate-spin' : ''}><RefreshIcon /></span>
-            {syncing ? 'Syncing...' : 'Sync'}
+            {syncing ? 'Syncing...' : pendingUpdate ? 'Updates available' : 'Sync'}
+            {pendingUpdate && !syncing && (
+              <span className="absolute top-1.5 right-2 w-1.5 h-1.5 rounded-full bg-emerald-500" />
+            )}
           </button>
         </div>
       </aside>
 
       {/* Main content */}
-      <main className="flex-1 overflow-auto">
+      <main className="flex-1 overflow-auto relative">
         <Outlet />
+        {syncing && (
+          <div className="absolute inset-0 z-40 flex items-center justify-center bg-surface/70 backdrop-blur-sm pointer-events-none">
+            <div className="flex items-center gap-3 px-5 py-3 bg-surface-card rounded-xl shadow-float">
+              <span className="animate-spin"><RefreshIcon /></span>
+              <span className="text-sm text-on-surface">Syncing… waiting for GitHub</span>
+            </div>
+          </div>
+        )}
       </main>
     </div>
   )
