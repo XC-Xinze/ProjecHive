@@ -59,7 +59,7 @@ export default function Settings() {
             {/* Logo placeholder — replace src with your logo file */}
             <div className="w-12 h-12 gradient-primary rounded-xl flex items-center justify-center overflow-hidden">
               <img
-                src="/logo.png"
+                src="/logo.svg"
                 alt="ProjectHive"
                 className="w-full h-full object-cover"
                 onError={(e) => {

@@ -41,7 +41,7 @@ const themes = {
   modern: {
     id: 'modern',
     name: 'Modern Blue',
-    description: '专业蓝调',
+    description: 'Professional blue tones',
     preview: ['#1275e2', '#5da3f5', '#f7f8fa'],
     fonts: {
       body: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",

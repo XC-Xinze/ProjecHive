@@ -41,7 +41,7 @@ export default function Login() {
       <div className="bg-surface-card rounded-2xl shadow-lifted p-10 w-full max-w-sm">
         <div className="flex items-center gap-3 mb-1">
           <div className="w-9 h-9 rounded-xl overflow-hidden flex items-center justify-center gradient-primary">
-            <img src="/logo.png" alt="ProjectHive" className="w-full h-full object-cover"
+            <img src="/logo.svg" alt="ProjectHive" className="w-full h-full object-cover"
               onError={(e) => { e.target.style.display = 'none'; e.target.parentElement.innerHTML = '<span style="color:white;font-weight:700;font-size:16px">PH</span>' }} />
           </div>
           <h1 className="text-2xl font-display font-bold text-on-surface">ProjectHive</h1>
