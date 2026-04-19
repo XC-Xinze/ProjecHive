@@ -75,12 +75,34 @@ export default function Settings() {
           </div>
 
           <div className="space-y-3">
-            <InfoRow label="Version" value="v1.0.2" />
+            <InfoRow label="Version" value="v1.2.1" />
             <InfoRow label="Platform" value="Electron + React + Vite" />
             <InfoRow label="Backend" value="GitHub Private Repository" />
             {currentUser && (
               <InfoRow label="Signed in as" value={currentUser.login} />
             )}
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-on-surface-dim">Author</span>
+              <a
+                href="https://www.bezenx.com"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs font-medium text-primary hover:underline cursor-pointer"
+              >
+                www.bezenx.com
+              </a>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-on-surface-dim">Repository</span>
+              <a
+                href="https://github.com/XC-Xinze/ProjecHive"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs font-medium text-primary hover:underline cursor-pointer"
+              >
+                github.com/XC-Xinze/ProjecHive
+              </a>
+            </div>
           </div>
 
           <div className="mt-5 pt-4" style={{ borderTop: '1px solid var(--color-surface-highest)' }}>

@@ -110,17 +110,39 @@ export default function Messages() {
   }, [loading, highlightMsgId])
 
   async function loadAll() {
-    setLoading(true)
-    const [msgs, collabs, tasks, tps] = await Promise.all([
+    // Hydrate from cache so we never flash empty during a write storm.
+    const cached = useStore.getState()
+    const cMsgs = cached.getCached(owner, repo, 'messages')
+    const cTopics = cached.getCached(owner, repo, 'topics')
+    const cTasks = cached.getCached(owner, repo, 'tasks')
+    if (cMsgs) setMessages(cMsgs)
+    if (cTopics) setTopics(cTopics)
+    if (cTasks) setAvailableTasks(cTasks)
+    if (cMsgs || cTopics || cTasks) setLoading(false)
+    else setLoading(true)
+
+    const [msgs, collabs, tasks, tps] = await Promise.allSettled([
       loadMessages(owner, repo),
       getCollaborators(owner, repo),
       loadTasks(),
-      loadTopics(owner, repo).catch(() => []),
+      loadTopics(owner, repo),
     ])
-    setMessages(mergeMessages(msgs))
-    setMembers(collabs)
-    setAvailableTasks(mergePending('tasks', tasks).concat(tasks))
-    setTopics(mergePending('topics', tps).concat(tps))
+    if (msgs.status === 'fulfilled') {
+      const merged = mergeMessages(msgs.value)
+      setMessages(merged)
+      cached.setCached(owner, repo, 'messages', merged)
+    }
+    if (collabs.status === 'fulfilled') setMembers(collabs.value)
+    if (tasks.status === 'fulfilled') {
+      const taskList = mergePending('tasks', tasks.value).concat(tasks.value)
+      setAvailableTasks(taskList)
+      cached.setCached(owner, repo, 'tasks', tasks.value)
+    }
+    if (tps.status === 'fulfilled') {
+      const topicList = mergePending('topics', tps.value).concat(tps.value)
+      setTopics(topicList)
+      cached.setCached(owner, repo, 'topics', tps.value)
+    }
     setLoading(false)
   }
 
@@ -909,7 +931,11 @@ export default function Messages() {
           ))}
         </div>
       ) : (
-        <div className="text-on-surface-dim text-sm text-center py-12">No messages yet.</div>
+        <div className="text-center py-16">
+          <div className="text-5xl mb-3 ph-float">💬</div>
+          <p className="text-sm font-medium text-on-surface mb-1">It's quiet in here</p>
+          <p className="text-xs text-on-surface-dim">Drop the first message — your team will see it after the next sync.</p>
+        </div>
       )}
 
       {showFilePicker && (

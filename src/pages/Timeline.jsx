@@ -6,7 +6,7 @@ import { parseCommitMessage, COMMIT_KEYWORDS } from '../services/template'
 const POLL_INTERVAL = 30000 // 30s auto-refresh
 
 export default function Timeline() {
-  const { owner, repo } = useStore()
+  const { owner, repo, getCached, setCached } = useStore()
   const [viewMode, setViewMode] = useState('project') // 'project' | 'code'
   const [codeRepos, setCodeRepos] = useState([]) // [{ owner, repo, url }]
   const [selectedCodeRepo, setSelectedCodeRepo] = useState(null) // index
@@ -50,20 +50,27 @@ export default function Timeline() {
     try {
       const data = await getCommits(activeRepo.owner, activeRepo.repo, { perPage: 50 })
       setCommits(data)
-    } catch { setCommits([]) }
+      setCached(activeRepo.owner, activeRepo.repo, 'commits', data)
+    } catch {
+      // Leave existing commits in place — propagation lag from a write storm
+      // shouldn't blank the timeline.
+    }
     if (!silent) setLoading(false)
-  }, [activeRepo.owner, activeRepo.repo])
+  }, [activeRepo.owner, activeRepo.repo, setCached])
 
   // Reload when active repo changes; poll for refreshes
   useEffect(() => {
-    setCommits([])
+    const cached = getCached(activeRepo.owner, activeRepo.repo, 'commits')
+    if (cached) { setCommits(cached); setLoading(false) }
+    else { setCommits([]); setLoading(true) }
     setDetails({})
     setExpandedSha(null)
     setFilterUser(null)
     setFilterKeyword(null)
-    loadCommits(false)
+    loadCommits(!!cached)  // background refresh if we already painted from cache
     pollRef.current = setInterval(() => loadCommits(true), POLL_INTERVAL)
     return () => clearInterval(pollRef.current)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadCommits])
 
   async function toggleDetail(sha) {

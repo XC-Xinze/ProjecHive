@@ -54,8 +54,20 @@ function getCompletedBy(task) {
 
 function AssigneeStack({ task, size = 20, currentUser, onToggleMine }) {
   const assignees = getAssignees(task)
-  if (assignees.length === 0) return null
   const completed = new Set(getCompletedBy(task).filter((u) => assignees.includes(u)))
+  const [burstKey, setBurstKey] = useState(0)
+  const lastDoneRef = useRef(currentUser ? completed.has(currentUser.login) : false)
+  const me = currentUser?.login
+
+  // Trigger sparkle only when *I* just transitioned from undone → done.
+  useEffect(() => {
+    if (!me) return
+    const nowDone = completed.has(me)
+    if (nowDone && !lastDoneRef.current) setBurstKey((k) => k + 1)
+    lastDoneRef.current = nowDone
+  }, [completed, me])
+
+  if (assignees.length === 0) return null
   const overlap = Math.round(size * 0.35)
   return (
     <div className="flex items-center">
@@ -65,6 +77,7 @@ function AssigneeStack({ task, size = 20, currentUser, onToggleMine }) {
         const ring = done ? 'ring-emerald-500' : 'ring-gray-300'
         const canClick = isMe && onToggleMine
         const Wrapper = canClick ? 'button' : 'div'
+        const showBurst = isMe && burstKey > 0
         return (
           <Wrapper
             key={u}
@@ -72,15 +85,26 @@ function AssigneeStack({ task, size = 20, currentUser, onToggleMine }) {
             onPointerDown={canClick ? (e) => e.stopPropagation() : undefined}
             onClick={canClick ? (e) => { e.stopPropagation(); onToggleMine() } : undefined}
             title={`${u}${done ? ' ✓ done' : ''}${canClick ? ' — click to toggle' : ''}`}
-            className={canClick ? 'cursor-pointer hover:scale-110 transition-transform' : ''}
+            className={`relative ${canClick ? 'cursor-pointer hover:scale-110 transition-transform' : ''}`}
             style={{ marginLeft: i === 0 ? 0 : -overlap, zIndex: assignees.length - i }}
           >
             <img
+              key={`${u}-${isMe ? burstKey : 0}`}
               src={`https://github.com/${u}.png?size=${size * 2}`}
               alt={u}
-              className={`rounded-full ring-2 bg-surface-card ${ring}`}
+              className={`rounded-full ring-2 bg-surface-card ${ring} ${isMe && burstKey > 0 ? 'ph-pop' : ''}`}
               style={{ width: size, height: size }}
             />
+            {showBurst && done && (
+              <span key={burstKey} className="absolute inset-0 pointer-events-none overflow-visible">
+                <span className="ph-sparkle" style={{ '--tx': '-22px', '--ty': '-22px' }} />
+                <span className="ph-sparkle" style={{ '--tx': '22px',  '--ty': '-22px', animationDelay: '40ms' }} />
+                <span className="ph-sparkle" style={{ '--tx': '-22px', '--ty': '22px',  animationDelay: '80ms' }} />
+                <span className="ph-sparkle" style={{ '--tx': '22px',  '--ty': '22px',  animationDelay: '120ms' }} />
+                <span className="ph-sparkle" style={{ '--tx': '0px',   '--ty': '-26px', animationDelay: '20ms' }} />
+                <span className="ph-sparkle" style={{ '--tx': '0px',   '--ty': '26px',  animationDelay: '100ms' }} />
+              </span>
+            )}
           </Wrapper>
         )
       })}
@@ -110,8 +134,28 @@ export default function Board() {
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
 
+  // Debounced per-task writes. Optimistic UI updates immediately; the actual
+  // GitHub commit fires after PENDING_WRITE_DELAY_MS of inactivity for that
+  // task, so rapid toggles (status, assignee ring) coalesce into one commit.
+  const PENDING_WRITE_DELAY_MS = 1500
+  const tasksRef = useRef(tasks)
+  const hasLoadedRef = useRef(false)
+  useEffect(() => {
+    tasksRef.current = tasks
+    // Mirror to the entity cache so other pages (Roadmap, Timeline, Overview,
+    // TaskList) see optimistic mutations without re-fetching from GitHub.
+    // Skip the mount-time empty array — loadTasks writes the cache itself.
+    if (hasLoadedRef.current && owner && repo) {
+      useStore.getState().setCached(owner, repo, 'tasks', tasks)
+    }
+  }, [tasks, owner, repo])
+  const pendingWritesRef = useRef(new Map())  // taskId → { timeout, message }
+
   const loadTasks = useCallback(async () => {
-    setLoading(true)
+    // Hydrate from cache first so Board doesn't flash empty during refetch.
+    const cached = useStore.getState().getCached(owner, repo, 'tasks')
+    if (cached) { setTasks(cached); setLoading(false) }
+    else setLoading(true)
     try {
       const [files, collabs, tps] = await Promise.all([
         listDirectory(owner, repo, 'tasks'),
@@ -120,6 +164,7 @@ export default function Board() {
       ])
       setMembers(collabs)
       setTopics(tps)
+      useStore.getState().setCached(owner, repo, 'topics', tps)
       const jsonFiles = files.filter((f) => f.name.endsWith('.json'))
       const loaded = await Promise.all(
         jsonFiles.map(async (f) => {
@@ -130,9 +175,12 @@ export default function Board() {
       )
       // Preserve locally-pending tasks not yet visible from GitHub.
       const survivors = mergePending('tasks', loaded)
-      setTasks(survivors.length ? [...loaded, ...survivors] : loaded)
+      const next = survivors.length ? [...loaded, ...survivors] : loaded
+      setTasks(next)
+      useStore.getState().setCached(owner, repo, 'tasks', next)
+      hasLoadedRef.current = true
     } catch {
-      setTasks([])
+      // Leave existing state alone; the cache (or last known list) keeps the UI populated.
     } finally {
       setLoading(false)
     }
@@ -159,18 +207,36 @@ export default function Board() {
     return update
   }
 
-  async function moveTask(taskId, newStatus) {
-    const task = tasks.find((t) => t.id === taskId)
-    if (!task || task.status === newStatus) return
+  function stripMeta(t) {
+    const { _sha, _path, ...rest } = t
+    return rest
+  }
 
-    const update = statusUpdate(task, newStatus)
+  function cancelPendingWrite(taskId) {
+    const map = pendingWritesRef.current
+    const existing = map.get(taskId)
+    if (existing) {
+      clearTimeout(existing.timeout)
+      map.delete(taskId)
+    }
+  }
 
-    // Optimistic update
-    setTasks((prev) =>
-      prev.map((t) => (t.id === taskId ? { ...t, ...update } : t))
-    )
-
+  function scheduleTaskCommit(taskId, commitMessage) {
+    const map = pendingWritesRef.current
+    const existing = map.get(taskId)
+    if (existing) clearTimeout(existing.timeout)
+    const entry = { message: commitMessage }
+    entry.timeout = setTimeout(() => {
+      map.delete(taskId)
+      flushTaskCommit(taskId, entry.message)
+    }, PENDING_WRITE_DELAY_MS)
+    map.set(taskId, entry)
     setSyncing(taskId)
+  }
+
+  async function flushTaskCommit(taskId, message) {
+    const task = tasksRef.current.find((t) => t.id === taskId)
+    if (!task || !task._path) { setSyncing(null); return }
     try {
       const { sha: latestSha, content: latestContent } = await getFileContent(owner, repo, task._path)
 
@@ -178,34 +244,57 @@ export default function Board() {
       if (task._sha && latestSha !== task._sha) {
         setSyncing(null)
         setConflict({
-          task, newStatus, remoteSha: latestSha,
+          task,
+          localSnapshot: stripMeta(task),
+          message,
+          remoteSha: latestSha,
           remoteContent: JSON.parse(latestContent),
         })
         return
       }
 
-      const latest = JSON.parse(latestContent)
-      Object.assign(latest, update)
-
+      // Merge our local fields onto remote so any unknown fields survive.
+      const merged = { ...JSON.parse(latestContent), ...stripMeta(task) }
       const result = await updateFile(
         owner, repo, task._path,
-        JSON.stringify(latest, null, 2),
-        `[task] Move "${task.title}" → ${newStatus}`,
-        latestSha
+        JSON.stringify(merged, null, 2),
+        message,
+        latestSha,
       )
       setTasks((prev) =>
-        prev.map((t) =>
-          t.id === taskId ? { ...t, ...update, _sha: result.content.sha } : t
-        )
+        prev.map((t) => (t.id === taskId ? { ...t, _sha: result.content.sha } : t)),
       )
     } catch (err) {
-      setTasks((prev) =>
-        prev.map((t) => (t.id === taskId ? { ...t, status: task.status } : t))
-      )
+      loadTasks()  // rollback to remote truth
       alert(`Sync failed: ${err.message}`)
     } finally {
       setSyncing(null)
     }
+  }
+
+  // Flush any still-pending writes when the user navigates away.
+  useEffect(() => {
+    return () => {
+      const map = pendingWritesRef.current
+      for (const [taskId, entry] of map.entries()) {
+        clearTimeout(entry.timeout)
+        // Fire & forget — the unmounted component can't update state, but the
+        // commit still lands on GitHub so the next mount sees it.
+        flushTaskCommit(taskId, entry.message)
+      }
+      map.clear()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  function moveTask(taskId, newStatus) {
+    const task = tasksRef.current.find((t) => t.id === taskId)
+    if (!task || task.status === newStatus) return
+    const update = statusUpdate(task, newStatus)
+    setTasks((prev) =>
+      prev.map((t) => (t.id === taskId ? { ...t, ...update } : t)),
+    )
+    scheduleTaskCommit(taskId, `[task] Move "${task.title}" → ${newStatus}`)
   }
 
   // Toggle the current user's personal completion mark. Status is independent —
@@ -228,21 +317,17 @@ export default function Board() {
   // Conflict resolution handlers
   async function handleConflictOverwrite() {
     if (!conflict) return
-    const { task, newStatus, remoteSha } = conflict
-    const { content: latestContent } = await getFileContent(owner, repo, task._path)
-    const latest = JSON.parse(latestContent)
-    const update = statusUpdate(task, newStatus)
-    Object.assign(latest, update)
+    const { task, localSnapshot, message } = conflict
+    const { sha: remoteSha, content: remoteContent } = await getFileContent(owner, repo, task._path)
+    const merged = { ...JSON.parse(remoteContent), ...localSnapshot }
     const result = await updateFile(
       owner, repo, task._path,
-      JSON.stringify(latest, null, 2),
-      `[task] Move "${task.title}" → ${newStatus} (force)`,
-      remoteSha
+      JSON.stringify(merged, null, 2),
+      `${message} (force)`,
+      remoteSha,
     )
     setTasks((prev) =>
-      prev.map((t) =>
-        t.id === task.id ? { ...t, ...update, _sha: result.content.sha } : t
-      )
+      prev.map((t) => (t.id === task.id ? { ...t, _sha: result.content.sha } : t)),
     )
     setConflict(null)
   }
@@ -305,6 +390,7 @@ export default function Board() {
     if (!confirmDelete) return
     const { task } = confirmDelete
     setDeleting(true)
+    cancelPendingWrite(task.id)
     setTasks((prev) => prev.filter((t) => t.id !== task.id))
     useStore.getState().removePendingWrite('tasks', task.id)
     try {
@@ -348,21 +434,11 @@ export default function Board() {
     }
   }
 
-  async function handleSaveTask(taskId, updates) {
-    const task = tasks.find(t => t.id === taskId)
+  function handleSaveTask(taskId, updates) {
+    const task = tasksRef.current.find((t) => t.id === taskId)
     if (!task) return
-    // Optimistic update
-    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, ...updates } : t))
-    try {
-      const { sha, content } = await getFileContent(owner, repo, task._path)
-      const latest = JSON.parse(content)
-      Object.assign(latest, updates)
-      const result = await updateFile(owner, repo, task._path, JSON.stringify(latest, null, 2), `[task] Update "${latest.title}"`, sha)
-      setTasks(prev => prev.map(t => t.id === taskId ? { ...t, ...updates, _sha: result.content.sha } : t))
-    } catch (err) {
-      loadTasks() // rollback
-      alert(`Save failed: ${err.message}`)
-    }
+    setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, ...updates } : t)))
+    scheduleTaskCommit(taskId, `[task] Update "${task.title}"`)
   }
 
   // Compute unique labels across all tasks
@@ -544,6 +620,7 @@ export default function Board() {
               onDelete={handleDelete}
               onTaskClick={handleTaskClick}
               onComplete={(taskId) => moveTask(taskId, 'done')}
+              onReopen={(taskId) => moveTask(taskId, 'todo')}
               onToggleMine={toggleMyCompletion}
             />
           ))}
@@ -579,6 +656,7 @@ export default function Board() {
                   onDelete={handleDelete}
                   onClick={() => handleTaskClick(task)}
                   onComplete={(taskId) => moveTask(taskId, 'done')}
+                  onReopen={(taskId) => moveTask(taskId, 'todo')}
                   onToggleMine={toggleMyCompletion}
                 />
               ))}
@@ -622,7 +700,7 @@ export default function Board() {
   )
 }
 
-function Column({ column, tasks, syncing, topics, currentUser, onDelete, onTaskClick, onComplete, onToggleMine }) {
+function Column({ column, tasks, syncing, topics, currentUser, onDelete, onTaskClick, onComplete, onReopen, onToggleMine }) {
   const { setNodeRef, isOver } = useDroppable({ id: column.id })
 
   return (
@@ -646,6 +724,7 @@ function Column({ column, tasks, syncing, topics, currentUser, onDelete, onTaskC
               onDelete={onDelete}
               onClick={() => onTaskClick(task)}
               onComplete={onComplete}
+              onReopen={onReopen}
               onToggleMine={onToggleMine}
             />
           ))}
@@ -655,7 +734,7 @@ function Column({ column, tasks, syncing, topics, currentUser, onDelete, onTaskC
   )
 }
 
-function TaskCard({ task, isDragging, isSyncing, topics, currentUser, onDelete, onClick, onComplete, onToggleMine }) {
+function TaskCard({ task, isDragging, isSyncing, topics, currentUser, onDelete, onClick, onComplete, onReopen, onToggleMine }) {
   const topic = task.topicId ? (topics || []).find((t) => t.id === task.topicId) : null
   const topicCat = topic ? (TOPIC_CATEGORIES[topic.category] || TOPIC_CATEGORIES.research) : null
   const { attributes, listeners, setNodeRef, transform, transition, isDragging: isSortDragging } = useSortable({ id: task.id })
@@ -686,6 +765,18 @@ function TaskCard({ task, isDragging, isSyncing, topics, currentUser, onDelete, 
   const overdue = task.dueDate && task.status !== 'done' && isOverdue(task.dueDate)
   const isDone = task.status === 'done'
 
+  // One-shot pulse when this card transitions into 'done'.
+  const [justDone, setJustDone] = useState(false)
+  const lastStatusRef = useRef(task.status)
+  useEffect(() => {
+    if (lastStatusRef.current !== 'done' && task.status === 'done') {
+      setJustDone(true)
+      const t = setTimeout(() => setJustDone(false), 950)
+      return () => clearTimeout(t)
+    }
+    lastStatusRef.current = task.status
+  }, [task.status])
+
   return (
     <div
       ref={setNodeRef}
@@ -695,7 +786,7 @@ function TaskCard({ task, isDragging, isSyncing, topics, currentUser, onDelete, 
       onPointerUp={handlePointerUp}
       className={`group bg-surface-card rounded-xl p-3.5 cursor-grab active:cursor-grabbing ${
         isDragging ? 'shadow-float opacity-90 rotate-2' : 'shadow-card hover:shadow-lifted'
-      } transition-all relative`}
+      } ${justDone ? 'ph-done-pulse' : ''} transition-all relative`}
     >
       {/* Delete button -- top right, visible on hover */}
       {onDelete && (
@@ -711,17 +802,21 @@ function TaskCard({ task, isDragging, isSyncing, topics, currentUser, onDelete, 
         </button>
       )}
       <div className="flex items-start gap-2.5">
-        {/* Complete button */}
-        {onComplete && (
+        {/* Complete / reopen button */}
+        {(onComplete || onReopen) && (
           <button
             onPointerDown={(e) => e.stopPropagation()}
-            onClick={(e) => { e.stopPropagation(); if (!isDone) onComplete(task.id) }}
+            onClick={(e) => {
+              e.stopPropagation()
+              if (isDone && onReopen) onReopen(task.id)
+              else if (!isDone && onComplete) onComplete(task.id)
+            }}
             className={`shrink-0 w-5 h-5 mt-0.5 rounded-full border-2 flex items-center justify-center transition-colors cursor-pointer ${
               isDone
-                ? 'bg-emerald-500 border-emerald-500 text-white'
+                ? 'bg-emerald-500 border-emerald-500 text-white hover:bg-emerald-400 hover:border-emerald-400'
                 : 'border-gray-300 hover:border-emerald-400 text-transparent hover:text-emerald-400'
             }`}
-            title={isDone ? 'Completed' : 'Mark complete'}
+            title={isDone ? 'Click to reopen' : 'Mark complete'}
           >
             <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />

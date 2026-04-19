@@ -29,16 +29,19 @@ function startOfDay(d) { const r = new Date(d); r.setHours(0, 0, 0, 0); return r
 function addDays(d, n) { const r = new Date(d); r.setDate(r.getDate() + n); return r }
 
 export default function Roadmap() {
-  const { owner, repo } = useStore()
-  const [tasks, setTasks] = useState([])
-  const [loading, setLoading] = useState(true)
+  const { owner, repo, getCached, setCached } = useStore()
+  const initialCached = getCached(owner, repo, 'tasks')
+  const [tasks, setTasks] = useState(initialCached || [])
+  const [loading, setLoading] = useState(!initialCached)
   const [weekOffset, setWeekOffset] = useState(0)
   const [hoveredTask, setHoveredTask] = useState(null)
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 })
   const scrollRef = useRef(null)
 
   const loadData = useCallback(async () => {
-    setLoading(true)
+    const cached = getCached(owner, repo, 'tasks')
+    if (cached) { setTasks(cached); setLoading(false) }
+    else setLoading(true)
     try {
       const files = await listDirectory(owner, repo, 'tasks')
       const jsonFiles = files.filter((f) => f.name.endsWith('.json'))
@@ -48,13 +51,15 @@ export default function Roadmap() {
           return JSON.parse(content)
         })
       )
-      setTasks(loaded.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt)))
+      const sorted = loaded.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))
+      setTasks(sorted)
+      setCached(owner, repo, 'tasks', sorted)
     } catch {
-      setTasks([])
+      // Leave existing state alone — keeps the UI populated during write storms / propagation lag.
     } finally {
       setLoading(false)
     }
-  }, [owner, repo])
+  }, [owner, repo, getCached, setCached])
 
   useEffect(() => { loadData() }, [loadData])
 
@@ -452,7 +457,9 @@ export default function Roadmap() {
         </div>
       ) : (
         <div className="bg-surface-card rounded-2xl shadow-card p-16 text-center">
-          <p className="text-on-surface-dim text-sm">No tasks yet. Create tasks on the Board to see them here.</p>
+          <div className="text-5xl mb-3 ph-float">🗺️</div>
+          <p className="text-sm font-medium text-on-surface mb-1">No journey to chart yet</p>
+          <p className="text-xs text-on-surface-dim">Create tasks on the Board and they'll show up here as a roadmap.</p>
         </div>
       )}
 

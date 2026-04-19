@@ -102,6 +102,26 @@ export const useStore = create((set) => ({
     set({ lastSelfCommitSha: sha })
   },
 
+  // Per-project entity cache. Pages prefer this over a fresh remote fetch so
+  // GitHub's eventual-consistency lag (especially during write storms on Board)
+  // can't flash empty state on Timeline/Roadmap/Overview/etc.
+  // Shape: { [`${owner}/${repo}`]: { tasks, messages, topics, docs, commits } }
+  entityCache: {},
+  getCached: (owner, repo, kind) => {
+    if (!owner || !repo) return null
+    return useStore.getState().entityCache[`${owner}/${repo}`]?.[kind] ?? null
+  },
+  setCached: (owner, repo, kind, items) => set((state) => {
+    if (!owner || !repo) return state
+    const key = `${owner}/${repo}`
+    return {
+      entityCache: {
+        ...state.entityCache,
+        [key]: { ...(state.entityCache[key] || {}), [kind]: items },
+      },
+    }
+  }),
+
   // Items created locally but not yet confirmed by a remote refetch. Keeps the
   // optimistic record alive across page navigation + GitHub propagation lag,
   // so newly-created tasks/messages/docs don't briefly disappear.

@@ -36,16 +36,19 @@ const SORT_OPTIONS = [
 const STATUS_ORDER = { blocked: 0, doing: 1, todo: 2, done: 3 }
 
 export default function TaskList() {
-  const { owner, repo, mergePending } = useStore()
-  const [tasks, setTasks] = useState([])
-  const [loading, setLoading] = useState(true)
+  const { owner, repo, mergePending, getCached, setCached } = useStore()
+  const initialCached = getCached(owner, repo, 'tasks')
+  const [tasks, setTasks] = useState(initialCached || [])
+  const [loading, setLoading] = useState(!initialCached)
   const [sortBy, setSortBy] = useState('created')
   const [sortAsc, setSortAsc] = useState(false)
   const [filterStatus, setFilterStatus] = useState(null)
   const [search, setSearch] = useState('')
 
   const loadTasks = useCallback(async () => {
-    setLoading(true)
+    const cached = getCached(owner, repo, 'tasks')
+    if (cached) { setTasks(cached); setLoading(false) }
+    else setLoading(true)
     try {
       const files = await listDirectory(owner, repo, 'tasks')
       const jsonFiles = files.filter((f) => f.name.endsWith('.json'))
@@ -56,13 +59,15 @@ export default function TaskList() {
         })
       )
       const survivors = mergePending('tasks', loaded)
-      setTasks(survivors.length ? [...loaded, ...survivors] : loaded)
+      const next = survivors.length ? [...loaded, ...survivors] : loaded
+      setTasks(next)
+      setCached(owner, repo, 'tasks', next)
     } catch {
-      setTasks([])
+      // Leave existing state alone — keeps the UI populated during write storms.
     } finally {
       setLoading(false)
     }
-  }, [owner, repo, mergePending])
+  }, [owner, repo, mergePending, getCached, setCached])
 
   useEffect(() => { loadTasks() }, [loadTasks])
 
@@ -310,8 +315,19 @@ export default function TaskList() {
             })}
           </div>
         ) : (
-          <div className="px-5 py-12 text-center text-on-surface-dim text-sm">
-            {tasks.length === 0 ? 'No tasks yet.' : 'No tasks match the current filter.'}
+          <div className="px-5 py-16 text-center">
+            {tasks.length === 0 ? (
+              <>
+                <div className="text-5xl mb-3 ph-float">📋</div>
+                <p className="text-sm font-medium text-on-surface mb-1">A clean slate</p>
+                <p className="text-xs text-on-surface-dim">Hop over to the Board to create your first task.</p>
+              </>
+            ) : (
+              <>
+                <div className="text-4xl mb-3">🔍</div>
+                <p className="text-sm text-on-surface-dim">Nothing matches the current filter.</p>
+              </>
+            )}
           </div>
         )}
       </div>

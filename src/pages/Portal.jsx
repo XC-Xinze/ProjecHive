@@ -22,24 +22,34 @@ export default function Portal() {
   useEffect(() => {
     async function load() {
       setLoading(true)
+
+      // Hydrate count from the entity cache so a transient task-fetch failure
+      // doesn't render the dashboard as "0 tasks" during a write storm.
+      const cachedTasks = useStore.getState().getCached(owner, repo, 'tasks')
+      if (cachedTasks) setTaskCount(cachedTasks.length)
+
       try {
-        const [readmeResult, configResult, collaborators, taskFiles] =
-          await Promise.all([
+        const [readmeResult, configResult, collabResult, taskFilesResult] =
+          await Promise.allSettled([
             getFileContent(owner, repo, 'README.md').catch(() => null),
             getConfig(owner, repo),
             getCollaborators(owner, repo),
             listDirectory(owner, repo, 'tasks'),
           ])
 
-        if (readmeResult?.content != null) setMd(readmeResult.content)
-        setConfig(configResult.config)
-        setMemberCount(collaborators.length)
-        setTaskCount(
-          taskFiles.filter((f) => f.name.endsWith('.json')).length,
-        )
+        if (readmeResult.status === 'fulfilled' && readmeResult.value?.content != null) setMd(readmeResult.value.content)
+        if (configResult.status === 'fulfilled') setConfig(configResult.value.config)
+        if (collabResult.status === 'fulfilled') setMemberCount(collabResult.value.length)
+        if (taskFilesResult.status === 'fulfilled') {
+          const taskFiles = taskFilesResult.value
+          setTaskCount(taskFiles.filter((f) => f.name.endsWith('.json')).length)
+        }
+        // ↑ For each failure we keep the previous value (or the cached one) — never blank.
+
+        const configResultValue = configResult.status === 'fulfilled' ? configResult.value : null
 
         // Collect all linked repo URLs from both codeRepo (string) and codeRepos (array)
-        const cfg = configResult.config
+        const cfg = configResultValue?.config
         const repoUrls = []
         if (cfg?.codeRepo) repoUrls.push(cfg.codeRepo)
         if (cfg?.codeRepos?.length) {
@@ -49,21 +59,26 @@ export default function Portal() {
         }
 
         if (repoUrls.length > 0) {
-          const allCommitArrays = await Promise.all(
-            repoUrls.map((url) =>
-              getExternalCommits(url, { perPage: 5 }),
-            ),
-          )
-          const merged = allCommitArrays
-            .flat()
-            .sort(
-              (a, b) =>
-                new Date(b.commit.author.date) -
-                new Date(a.commit.author.date),
+          try {
+            const allCommitArrays = await Promise.all(
+              repoUrls.map((url) =>
+                getExternalCommits(url, { perPage: 5 }).catch(() => []),
+              ),
             )
-            .slice(0, 5)
-          setCodeCommits(merged)
+            const merged = allCommitArrays
+              .flat()
+              .sort(
+                (a, b) =>
+                  new Date(b.commit.author.date) -
+                  new Date(a.commit.author.date),
+              )
+              .slice(0, 5)
+            if (merged.length > 0) setCodeCommits(merged)
+            // ↑ Don't blank an existing list on a failed refresh.
+          } catch {}
         }
+      } catch {
+        // Top-level fail — keep whatever we already had on screen.
       } finally {
         setLoading(false)
       }

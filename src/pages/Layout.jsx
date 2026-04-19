@@ -49,6 +49,20 @@ export default function Layout() {
     typeof sessionStorage !== 'undefined' && sessionStorage.getItem(syncFlagKey) === '1'
   )
   const [pendingUpdate, setPendingUpdate] = useState(false)
+  const [syncJustFinished, setSyncJustFinished] = useState(false)
+  const prevSyncingRef = useRef(syncing)
+  useEffect(() => {
+    if (prevSyncingRef.current && !syncing) {
+      setSyncJustFinished(true)
+      const t = setTimeout(() => setSyncJustFinished(false), 1400)
+      return () => clearTimeout(t)
+    }
+    prevSyncingRef.current = syncing
+  }, [syncing])
+
+  // Bounce the bell when unread notif count increases.
+  const [bellBounceKey, setBellBounceKey] = useState(0)
+  const prevUnreadRef = useRef(null)
   const lastSeenShaRef = useRef(
     typeof localStorage !== 'undefined' ? localStorage.getItem(shaKey) : null
   )
@@ -214,6 +228,13 @@ export default function Layout() {
 
   const unreadNotifCount = notifications.filter((n) => !readNotifIds.includes(n.id)).length
 
+  useEffect(() => {
+    if (prevUnreadRef.current !== null && unreadNotifCount > prevUnreadRef.current) {
+      setBellBounceKey((k) => k + 1)
+    }
+    prevUnreadRef.current = unreadNotifCount
+  }, [unreadNotifCount])
+
   return (
     <div className="h-screen bg-surface flex overflow-hidden">
       {/* Sidebar */}
@@ -320,7 +341,7 @@ export default function Layout() {
               onClick={() => setShowNotifs(!showNotifs)}
               className="w-full flex flex-col items-center gap-0.5 py-2 rounded-xl hover:bg-surface transition-colors cursor-pointer text-on-surface-variant hover:text-on-surface"
             >
-              <div className="relative">
+              <div key={bellBounceKey} className={`relative ${bellBounceKey > 0 ? 'ph-bounce' : ''}`}>
                 <svg className="w-[18px] h-[18px]" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M14.857 17.082a23.848 23.848 0 0 0 5.454-1.31A8.967 8.967 0 0 1 18 9.75V9A6 6 0 0 0 6 9v.75a8.967 8.967 0 0 1-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 0 1-5.714 0m5.714 0a3 3 0 1 1-5.714 0" />
                 </svg>
@@ -420,11 +441,23 @@ export default function Layout() {
           <button
             onClick={handleSync}
             disabled={syncing}
-            className="relative w-full flex items-center justify-center gap-2 px-3 py-2 text-xs text-on-surface-dim hover:text-on-surface-variant hover:bg-surface rounded-lg transition-colors cursor-pointer disabled:opacity-50"
+            className={`relative w-full flex items-center justify-center gap-2 px-3 py-2 text-xs rounded-lg transition-colors cursor-pointer disabled:opacity-50 ${
+              syncJustFinished
+                ? 'text-emerald-600 bg-emerald-50'
+                : 'text-on-surface-dim hover:text-on-surface-variant hover:bg-surface'
+            }`}
           >
-            <span className={syncing ? 'animate-spin' : ''}><RefreshIcon /></span>
-            {syncing ? 'Syncing...' : pendingUpdate ? 'Updates available' : 'Sync'}
-            {pendingUpdate && !syncing && (
+            {syncJustFinished ? (
+              <span className="ph-check-flash">
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                </svg>
+              </span>
+            ) : (
+              <span className={syncing ? 'animate-spin' : ''}><RefreshIcon /></span>
+            )}
+            {syncJustFinished ? 'Synced' : syncing ? 'Syncing...' : pendingUpdate ? 'Updates available' : 'Sync'}
+            {pendingUpdate && !syncing && !syncJustFinished && (
               <span className="absolute top-1.5 right-2 w-1.5 h-1.5 rounded-full bg-emerald-500" />
             )}
           </button>

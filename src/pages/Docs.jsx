@@ -11,8 +11,8 @@ const TYPE_OPTIONS = [
 ]
 
 export default function Docs() {
-  const { owner, repo, currentUser, addPendingWrite, mergePending } = useStore()
-  const [docs, setDocs] = useState([])
+  const { owner, repo, currentUser, addPendingWrite, mergePending, getCached, setCached } = useStore()
+  const [docs, setDocs] = useState(() => getCached(owner, repo, 'docs') || [])
 
   // Merge remote docs with locally-pending creates not yet propagated.
   function mergeDocs(remote) {
@@ -20,7 +20,7 @@ export default function Docs() {
     if (!survivors.length) return remote
     return [...survivors, ...remote] // newest-first; pending are most recent
   }
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(() => !getCached(owner, repo, 'docs'))
   const [showForm, setShowForm] = useState(false)
   const [filterType, setFilterType] = useState(null)
 
@@ -34,8 +34,22 @@ export default function Docs() {
   const fileInputRef = useRef(null)
 
   useEffect(() => {
-    setLoading(true)
-    loadDocs(owner, repo).then((d) => setDocs(mergeDocs(d))).finally(() => setLoading(false))
+    let cancelled = false
+    const cached = getCached(owner, repo, 'docs')
+    if (cached) { setDocs(cached); setLoading(false) }
+    else setLoading(true)
+    loadDocs(owner, repo)
+      .then((d) => {
+        if (cancelled) return
+        const merged = mergeDocs(d)
+        setDocs(merged)
+        setCached(owner, repo, 'docs', d)
+      })
+      .catch(() => {
+        // Leave existing docs in place — don't blank the UI on transient errors.
+      })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
   }, [owner, repo])
 
   async function handleCreate(e) {

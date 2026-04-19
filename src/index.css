@@ -128,3 +128,67 @@ h1, h2, h3, h4, h5, h6 {
 @utility gradient-primary {
   background: linear-gradient(135deg, var(--color-primary), var(--color-primary-light));
 }
+
+/* ── Micro-interactions ── */
+@keyframes ph-pop {
+  0%   { transform: scale(1); }
+  40%  { transform: scale(1.25); }
+  70%  { transform: scale(0.92); }
+  100% { transform: scale(1); }
+}
+.ph-pop { animation: ph-pop 380ms cubic-bezier(0.34, 1.56, 0.64, 1); }
+
+@keyframes ph-sparkle {
+  0%   { opacity: 0; transform: translate(-50%, -50%) scale(0.2); }
+  20%  { opacity: 1; transform: translate(-50%, -50%) scale(1.4); }
+  100% {
+    opacity: 0;
+    transform:
+      translate(calc(-50% + var(--tx, 0px)), calc(-50% + var(--ty, 0px)))
+      scale(0.5);
+  }
+}
+.ph-sparkle {
+  position: absolute;
+  left: 50%; top: 50%;
+  width: 7px; height: 7px;
+  border-radius: 9999px;
+  background: #fbbf24;
+  box-shadow: 0 0 6px rgba(251, 191, 36, 0.9);
+  pointer-events: none;
+  animation: ph-sparkle 700ms ease-out forwards;
+}
+
+@keyframes ph-done-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.45); }
+  60%  { box-shadow: 0 0 0 12px rgba(16, 185, 129, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+}
+.ph-done-pulse { animation: ph-done-pulse 900ms ease-out; }
+
+@keyframes ph-bounce {
+  0%, 100% { transform: translateY(0); }
+  30%      { transform: translateY(-4px); }
+  60%      { transform: translateY(0); }
+  80%      { transform: translateY(-2px); }
+}
+.ph-bounce { animation: ph-bounce 600ms cubic-bezier(0.34, 1.56, 0.64, 1); }
+
+@keyframes ph-check-flash {
+  0%   { transform: scale(0.5); opacity: 0; }
+  40%  { transform: scale(1.15); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+.ph-check-flash { animation: ph-check-flash 320ms cubic-bezier(0.34, 1.56, 0.64, 1); }
+
+@keyframes ph-float {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-6px); }
+}
+.ph-float { animation: ph-float 3.5s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ph-pop, .ph-sparkle, .ph-done-pulse, .ph-bounce, .ph-check-flash, .ph-float {
+    animation: none !important;
+  }
+}
