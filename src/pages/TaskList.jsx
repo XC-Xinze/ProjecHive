@@ -2,6 +2,16 @@ import { useEffect, useState, useCallback } from 'react'
 import { useStore } from '../store'
 import { listDirectory, getFileContent, updateFile } from '../services/github'
 
+function getAssignees(task) {
+  if (Array.isArray(task.assignees)) return task.assignees
+  if (task.assignee) return [task.assignee]
+  return []
+}
+
+function getCompletedBy(task) {
+  return Array.isArray(task.completedBy) ? task.completedBy : []
+}
+
 const STATUS_DOT = {
   todo: 'bg-gray-400',
   doing: 'bg-blue-500',
@@ -89,7 +99,7 @@ export default function TaskList() {
     filtered = filtered.filter(
       (t) =>
         t.title.toLowerCase().includes(q) ||
-        t.assignee?.toLowerCase().includes(q) ||
+        getAssignees(t).some((u) => u.toLowerCase().includes(q)) ||
         t.labels?.some((l) => l.toLowerCase().includes(q))
     )
   }
@@ -111,9 +121,12 @@ export default function TaskList() {
       case 'status':
         cmp = (STATUS_ORDER[a.status] ?? 9) - (STATUS_ORDER[b.status] ?? 9)
         break
-      case 'assignee':
-        cmp = (a.assignee || 'zzz').localeCompare(b.assignee || 'zzz')
+      case 'assignee': {
+        const aKey = getAssignees(a).join(',') || 'zzz'
+        const bKey = getAssignees(b).join(',') || 'zzz'
+        cmp = aKey.localeCompare(bKey)
         break
+      }
     }
     return sortAsc ? cmp : -cmp
   })
@@ -247,20 +260,32 @@ export default function TaskList() {
                     <span className={`absolute left-[-12px] top-1/2 -translate-y-1/2 w-2 h-2 rounded-full ${STATUS_DOT[task.status]} pointer-events-none`} />
                   </div>
 
-                  {/* Assignee */}
-                  <div className="flex items-center gap-2">
-                    {task.assignee ? (
-                      <>
-                        <img
-                          src={`https://github.com/${task.assignee}.png?size=24`}
-                          alt=""
-                          className="w-5 h-5 rounded-full"
-                        />
-                        <span className="text-xs text-on-surface-variant truncate">{task.assignee}</span>
-                      </>
-                    ) : (
-                      <span className="text-xs text-on-surface-dim">—</span>
-                    )}
+                  {/* Assignees */}
+                  <div className="flex items-center gap-2 min-w-0">
+                    {(() => {
+                      const assignees = getAssignees(task)
+                      const completed = getCompletedBy(task)
+                      if (assignees.length === 0) return <span className="text-xs text-on-surface-dim">—</span>
+                      return (
+                        <>
+                          <div className="flex items-center">
+                            {assignees.map((u, i) => (
+                              <img
+                                key={u}
+                                src={`https://github.com/${u}.png?size=24`}
+                                alt={u}
+                                title={`${u}${completed.includes(u) ? ' ✓' : ''}`}
+                                className={`w-5 h-5 rounded-full ring-2 bg-surface-card ${completed.includes(u) ? 'ring-emerald-500' : 'ring-gray-300'}`}
+                                style={{ marginLeft: i === 0 ? 0 : -7, zIndex: assignees.length - i }}
+                              />
+                            ))}
+                          </div>
+                          <span className="text-xs text-on-surface-variant truncate">
+                            {assignees.length === 1 ? assignees[0] : `${assignees.length} people`}
+                          </span>
+                        </>
+                      )
+                    })()}
                   </div>
 
                   {/* Due date */}

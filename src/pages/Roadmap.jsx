@@ -15,6 +15,15 @@ const STATUS_COLOR = {
   blocked: { bg: '#ef4444', light: '#fef2f2' },
 }
 
+function getAssignees(task) {
+  if (Array.isArray(task.assignees)) return task.assignees
+  if (task.assignee) return [task.assignee]
+  return []
+}
+function getCompletedBy(task) {
+  return Array.isArray(task.completedBy) ? task.completedBy : []
+}
+
 function daysBetween(a, b) { return Math.round((b - a) / 86400000) }
 function startOfDay(d) { const r = new Date(d); r.setHours(0, 0, 0, 0); return r }
 function addDays(d, n) { const r = new Date(d); r.setDate(r.getDate() + n); return r }
@@ -346,14 +355,30 @@ export default function Roadmap() {
                               />
                             )}
 
-                            {/* Avatar */}
-                            {task.assignee && displayWidth > 40 && (
-                              <img
-                                src={`https://github.com/${task.assignee}.png?size=24`}
-                                alt=""
-                                className="w-5 h-5 rounded-full shrink-0 ring-2 ring-white/30"
-                              />
-                            )}
+                            {/* Avatars */}
+                            {(() => {
+                              const assignees = getAssignees(task)
+                              if (assignees.length === 0 || displayWidth <= 40) return null
+                              const completed = getCompletedBy(task)
+                              const visible = assignees.slice(0, 3)
+                              return (
+                                <div className="flex items-center shrink-0">
+                                  {visible.map((u, i) => (
+                                    <img
+                                      key={u}
+                                      src={`https://github.com/${u}.png?size=24`}
+                                      alt={u}
+                                      title={`${u}${completed.includes(u) ? ' ✓' : ''}`}
+                                      className={`w-5 h-5 rounded-full ring-2 ${completed.includes(u) ? 'ring-emerald-300' : 'ring-white/30'}`}
+                                      style={{ marginLeft: i === 0 ? 0 : -7, zIndex: visible.length - i }}
+                                    />
+                                  ))}
+                                  {assignees.length > visible.length && (
+                                    <span className="text-white/80 text-[10px] ml-1">+{assignees.length - visible.length}</span>
+                                  )}
+                                </div>
+                              )
+                            })()}
 
                             {/* Title inside bar */}
                             {displayWidth > 100 && (
@@ -407,7 +432,12 @@ export default function Roadmap() {
                       <p className="font-medium" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 260 }}>{task.title}</p>
                       <div className="flex items-center gap-2 mt-1 text-white/70" style={{ whiteSpace: 'nowrap' }}>
                         <span className="capitalize">{task.status}</span>
-                        {task.assignee && <span>· {task.assignee}</span>}
+                        {(() => {
+                          const a = getAssignees(task)
+                          if (a.length === 0) return null
+                          const c = getCompletedBy(task)
+                          return <span>· {a.length === 1 ? a[0] : `${a.length} people (${c.filter((u) => a.includes(u)).length}/${a.length})`}</span>
+                        })()}
                         {task.dueDate && (
                           <span>· Due {new Date(task.dueDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
                         )}

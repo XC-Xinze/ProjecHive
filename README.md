@@ -57,7 +57,12 @@ ProjectHive removes that trade-off:
 
 ### Tasks & Planning
 - **Kanban Board** with four columns (Todo / Doing / Done / Blocked) and drag-and-drop between them
-- **Task details** — assignees, due dates with overdue highlighting, labels, descriptions, linked files, optional Topic
+- **Multi-assignee tasks** — assign one or many people; each shows as an avatar with a colored ring for personal completion state, independent of the task's overall status
+- **Per-person completion tracking** — each assignee can check off their own slice of the work without flipping the whole task to Done
+- **Recently Completed strip** — the last 5 done tasks stay inline on the board so an accidental check is one click to undo, instead of being banished to a separate list
+- **Board stats footer** — Total · Active · Done · Overdue · My Active counters right where you're working
+- **Styled delete confirmation** — type-aware dialog warns about message references before you remove a task
+- **Task details** — due dates with overdue highlighting, labels, descriptions, linked files, optional Topic
 - **Roadmap** — Gantt timeline showing all tasks across weeks/months with status indicators and on-track/at-risk/overdue counts
 - **Task list view** — filterable, sortable flat table for power users
 - **Bidirectional task ↔ message linking** via `#taskName` — referenced tasks open in a modal; deleted tasks render as struck-through
@@ -71,6 +76,8 @@ ProjectHive removes that trade-off:
 
 ### Project Surface
 - **Multi-project switcher** — manage many repos from one window, each picked up by the `gitsync-` prefix convention
+- **Global search palette** (`⌘K` / `Ctrl+K`) — fuzzy-search tasks, messages, topics, and docs from anywhere; arrow-key navigate, Enter to jump
+- **Personal Notes drawer** — private scratch pad per project, stored only in your browser's localStorage; never committed, never seen by collaborators
 - **Documents** — shared link/file library with categories and previews
 - **Members** — view and manage GitHub collaborators directly
 - **Timeline** — full commit history across both the management repo and the linked code repo, filterable by author and commit type

@@ -41,6 +41,53 @@ function isOverdue(dateStr) {
   return due < new Date()
 }
 
+// Backward-compat: tasks may have legacy `assignee` (string) instead of `assignees` (array).
+function getAssignees(task) {
+  if (Array.isArray(task.assignees)) return task.assignees
+  if (task.assignee) return [task.assignee]
+  return []
+}
+
+function getCompletedBy(task) {
+  return Array.isArray(task.completedBy) ? task.completedBy : []
+}
+
+function AssigneeStack({ task, size = 20, currentUser, onToggleMine }) {
+  const assignees = getAssignees(task)
+  if (assignees.length === 0) return null
+  const completed = new Set(getCompletedBy(task).filter((u) => assignees.includes(u)))
+  const overlap = Math.round(size * 0.35)
+  return (
+    <div className="flex items-center">
+      {assignees.map((u, i) => {
+        const done = completed.has(u)
+        const isMe = currentUser && u === currentUser.login
+        const ring = done ? 'ring-emerald-500' : 'ring-gray-300'
+        const canClick = isMe && onToggleMine
+        const Wrapper = canClick ? 'button' : 'div'
+        return (
+          <Wrapper
+            key={u}
+            type={canClick ? 'button' : undefined}
+            onPointerDown={canClick ? (e) => e.stopPropagation() : undefined}
+            onClick={canClick ? (e) => { e.stopPropagation(); onToggleMine() } : undefined}
+            title={`${u}${done ? ' ✓ done' : ''}${canClick ? ' — click to toggle' : ''}`}
+            className={canClick ? 'cursor-pointer hover:scale-110 transition-transform' : ''}
+            style={{ marginLeft: i === 0 ? 0 : -overlap, zIndex: assignees.length - i }}
+          >
+            <img
+              src={`https://github.com/${u}.png?size=${size * 2}`}
+              alt={u}
+              className={`rounded-full ring-2 bg-surface-card ${ring}`}
+              style={{ width: size, height: size }}
+            />
+          </Wrapper>
+        )
+      })}
+    </div>
+  )
+}
+
 export default function Board() {
   const { owner, repo, currentUser, addPendingWrite, mergePending } = useStore()
   const navigate = useNavigate()
@@ -58,6 +105,8 @@ export default function Board() {
   const [isDragging, setIsDragging] = useState(false)
   const [viewFilter, setViewFilter] = useState('active')
   const [filterLabel, setFilterLabel] = useState(null)
+  const [confirmDelete, setConfirmDelete] = useState(null)  // { task, refCount }
+  const [deleting, setDeleting] = useState(false)
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
 
@@ -102,13 +151,23 @@ export default function Board() {
     }
   }, [tasks, searchParams, setSearchParams])
 
+  // Stamp/clear `completedAt` so the Recently Completed strip can sort.
+  function statusUpdate(task, newStatus) {
+    const update = { status: newStatus }
+    if (newStatus === 'done' && task.status !== 'done') update.completedAt = new Date().toISOString()
+    if (newStatus !== 'done' && task.status === 'done') update.completedAt = null
+    return update
+  }
+
   async function moveTask(taskId, newStatus) {
     const task = tasks.find((t) => t.id === taskId)
     if (!task || task.status === newStatus) return
 
+    const update = statusUpdate(task, newStatus)
+
     // Optimistic update
     setTasks((prev) =>
-      prev.map((t) => (t.id === taskId ? { ...t, status: newStatus } : t))
+      prev.map((t) => (t.id === taskId ? { ...t, ...update } : t))
     )
 
     setSyncing(taskId)
@@ -126,7 +185,7 @@ export default function Board() {
       }
 
       const latest = JSON.parse(latestContent)
-      latest.status = newStatus
+      Object.assign(latest, update)
 
       const result = await updateFile(
         owner, repo, task._path,
@@ -136,7 +195,7 @@ export default function Board() {
       )
       setTasks((prev) =>
         prev.map((t) =>
-          t.id === taskId ? { ...t, status: newStatus, _sha: result.content.sha } : t
+          t.id === taskId ? { ...t, ...update, _sha: result.content.sha } : t
         )
       )
     } catch (err) {
@@ -149,13 +208,31 @@ export default function Board() {
     }
   }
 
+  // Toggle the current user's personal completion mark. Status is independent —
+  // changes only via drag, Mark Complete, or Reopen.
+  async function toggleMyCompletion(taskId) {
+    const me = currentUser?.login
+    if (!me) return
+    const task = tasks.find((t) => t.id === taskId)
+    if (!task) return
+    const assignees = getAssignees(task)
+    if (!assignees.includes(me)) return
+    const completed = getCompletedBy(task)
+    const isMine = completed.includes(me)
+    const newCompleted = isMine
+      ? completed.filter((u) => u !== me)
+      : Array.from(new Set([...completed, me]))
+    await handleSaveTask(taskId, { completedBy: newCompleted })
+  }
+
   // Conflict resolution handlers
   async function handleConflictOverwrite() {
     if (!conflict) return
     const { task, newStatus, remoteSha } = conflict
     const { content: latestContent } = await getFileContent(owner, repo, task._path)
     const latest = JSON.parse(latestContent)
-    latest.status = newStatus
+    const update = statusUpdate(task, newStatus)
+    Object.assign(latest, update)
     const result = await updateFile(
       owner, repo, task._path,
       JSON.stringify(latest, null, 2),
@@ -164,7 +241,7 @@ export default function Board() {
     )
     setTasks((prev) =>
       prev.map((t) =>
-        t.id === task.id ? { ...t, status: newStatus, _sha: result.content.sha } : t
+        t.id === task.id ? { ...t, ...update, _sha: result.content.sha } : t
       )
     )
     setConflict(null)
@@ -175,13 +252,14 @@ export default function Board() {
     await loadTasks()
   }
 
-  async function createTask(title, assignee, description, dueDate, linkedFiles, topicId) {
+  async function createTask(title, assignees, description, dueDate, linkedFiles, topicId) {
     const id = `task-${Date.now()}`
     const task = {
       id,
       title,
       status: 'todo',
-      assignee: assignee || null,
+      assignees: assignees || [],
+      completedBy: [],
       description: description || '',
       dueDate: dueDate || null,
       linkedFiles: linkedFiles || [],
@@ -211,29 +289,33 @@ export default function Board() {
     const task = tasks.find((t) => t.id === taskId)
     if (!task) return
 
-    // Check if any messages reference this task
-    let refWarning = ''
+    let refCount = 0
     try {
       const msgs = await loadMessages(owner, repo)
-      const refs = msgs.filter((m) =>
+      refCount = msgs.filter((m) =>
         m.taskRefs?.some((r) => r.toLowerCase() === task.title.toLowerCase()) ||
         m.body?.includes(`#${task.title}`)
-      )
-      if (refs.length > 0) {
-        refWarning = `\n\nThis task is referenced in ${refs.length} message(s). References will show as deleted.`
-      }
+      ).length
     } catch {}
 
-    if (!confirm(`Delete "${task.title}"?${refWarning}`)) return
+    setConfirmDelete({ task, refCount })
+  }
 
-    setTasks((prev) => prev.filter((t) => t.id !== taskId))
-    useStore.getState().removePendingWrite('tasks', taskId)
+  async function performDelete() {
+    if (!confirmDelete) return
+    const { task } = confirmDelete
+    setDeleting(true)
+    setTasks((prev) => prev.filter((t) => t.id !== task.id))
+    useStore.getState().removePendingWrite('tasks', task.id)
     try {
       const { sha } = await getFileContent(owner, repo, task._path)
       await deleteFile(owner, repo, task._path, `[task] Delete "${task.title}"`, sha)
+      setConfirmDelete(null)
     } catch (err) {
       setTasks((prev) => [...prev, task])
       alert(`Delete failed: ${err.message}`)
+    } finally {
+      setDeleting(false)
     }
   }
 
@@ -293,13 +375,35 @@ export default function Board() {
     return true // 'all'
   })
 
-  // Count of done tasks (for the collapsed summary)
-  const doneCount = tasks.filter((t) => {
-    if (t.status !== 'done') return false
-    if (filterMine && t.assignee !== currentUser?.login) return false
-    if (filterLabel && !(t.labels || []).includes(filterLabel)) return false
-    return true
-  }).length
+  // Done tasks honoring active filters, sorted newest-first by completion time.
+  // Older completions (>RECENT_DONE_LIMIT) get rolled into the Done view link.
+  const RECENT_DONE_LIMIT = 5
+  const filteredDone = tasks
+    .filter((t) => t.status === 'done')
+    .filter((t) => !filterMine || getAssignees(t).includes(currentUser?.login))
+    .filter((t) => !filterLabel || (t.labels || []).includes(filterLabel))
+    .sort((a, b) => {
+      const ta = new Date(a.completedAt || a.createdAt || 0).getTime()
+      const tb = new Date(b.completedAt || b.createdAt || 0).getTime()
+      return tb - ta
+    })
+  const doneCount = filteredDone.length
+  const recentDone = filteredDone.slice(0, RECENT_DONE_LIMIT)
+  const olderDoneCount = Math.max(0, doneCount - RECENT_DONE_LIMIT)
+
+  // Footer stats — over the unfiltered task set so numbers don't lie.
+  const stats = (() => {
+    const total = tasks.length
+    const done = tasks.filter((t) => t.status === 'done').length
+    const active = total - done
+    const overdue = tasks.filter(
+      (t) => t.status !== 'done' && t.dueDate && isOverdue(t.dueDate),
+    ).length
+    const mine = currentUser?.login
+      ? tasks.filter((t) => t.status !== 'done' && getAssignees(t).includes(currentUser.login)).length
+      : null
+    return { total, done, active, overdue, mine }
+  })()
 
   if (loading) {
     return (
@@ -331,6 +435,16 @@ export default function Board() {
         />
       )}
 
+      {confirmDelete && (
+        <DeleteTaskDialog
+          task={confirmDelete.task}
+          refCount={confirmDelete.refCount}
+          deleting={deleting}
+          onConfirm={performDelete}
+          onCancel={() => setConfirmDelete(null)}
+        />
+      )}
+
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-3">
           <h2 className="text-lg font-display font-semibold text-on-surface">Board</h2>
@@ -342,7 +456,7 @@ export default function Board() {
                 : 'bg-surface-card text-on-surface-variant hover:shadow-card'
             }`}
           >
-            My Tasks {filterMine && `(${tasks.filter(t => t.assignee === currentUser?.login && t.status !== 'done').length})`}
+            My Tasks {filterMine && `(${tasks.filter(t => getAssignees(t).includes(currentUser?.login) && t.status !== 'done').length})`}
           </button>
         </div>
         <button
@@ -420,37 +534,73 @@ export default function Board() {
               column={col}
               tasks={tasks.filter((t) => {
                 if (t.status !== col.id) return false
-                if (filterMine && t.assignee !== currentUser?.login) return false
+                if (filterMine && !getAssignees(t).includes(currentUser?.login)) return false
                 if (filterLabel && !(t.labels || []).includes(filterLabel)) return false
                 return true
               })}
               syncing={syncing}
               topics={topics}
+              currentUser={currentUser}
               onDelete={handleDelete}
               onTaskClick={handleTaskClick}
               onComplete={(taskId) => moveTask(taskId, 'done')}
+              onToggleMine={toggleMyCompletion}
             />
           ))}
         </div>
 
-        {/* Collapsed done summary in active view */}
-        {viewFilter === 'active' && doneCount > 0 && (
-          <button
-            onClick={() => setViewFilter('done')}
-            className="mt-4 px-4 py-2.5 bg-surface-card rounded-xl shadow-card text-sm text-on-surface-variant hover:shadow-lifted transition-all cursor-pointer flex items-center gap-2"
-          >
-            <span className="w-2 h-2 rounded-full bg-emerald-500" />
-            <span>Done ({doneCount})</span>
-            <svg className="w-4 h-4 ml-1 text-on-surface-dim" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="m9 5 7 7-7 7" />
-            </svg>
-          </button>
+        {/* Recently Completed — shown inline so accidental marks are easy to undo */}
+        {viewFilter === 'active' && recentDone.length > 0 && (
+          <div className="mt-8">
+            <div className="flex items-center gap-2.5 mb-3">
+              <span className="w-2 h-2 rounded-full bg-emerald-500" />
+              <span className="font-display font-semibold text-sm text-on-surface">Recently Completed</span>
+              <span className="text-xs text-on-surface-dim">{recentDone.length}{olderDoneCount > 0 ? ` of ${doneCount}` : ''}</span>
+              {olderDoneCount > 0 && (
+                <button
+                  onClick={() => setViewFilter('done')}
+                  className="ml-auto text-xs text-on-surface-dim hover:text-primary cursor-pointer flex items-center gap-1"
+                >
+                  View all done ({doneCount})
+                  <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="m9 5 7 7-7 7" />
+                  </svg>
+                </button>
+              )}
+            </div>
+            <div className="grid gap-2.5" style={{ gridTemplateColumns: `repeat(${RECENT_DONE_LIMIT}, minmax(0, 1fr))` }}>
+              {recentDone.map((task) => (
+                <TaskCard
+                  key={task.id}
+                  task={task}
+                  topics={topics}
+                  currentUser={currentUser}
+                  isSyncing={syncing === task.id}
+                  onDelete={handleDelete}
+                  onClick={() => handleTaskClick(task)}
+                  onComplete={(taskId) => moveTask(taskId, 'done')}
+                  onToggleMine={toggleMyCompletion}
+                />
+              ))}
+            </div>
+          </div>
         )}
 
         <DragOverlay>
           {activeTask ? <TaskCard task={activeTask} isDragging /> : null}
         </DragOverlay>
       </DndContext>
+
+      {/* Stats footer */}
+      <div className="mt-10 pt-6 border-t" style={{ borderColor: 'var(--color-surface-low)' }}>
+        <div className={`grid gap-3 ${stats.mine !== null ? 'grid-cols-5' : 'grid-cols-4'}`}>
+          <StatCard label="Total" value={stats.total} color="var(--color-primary)" />
+          <StatCard label="Active" value={stats.active} color="#4456ba" />
+          <StatCard label="Done" value={stats.done} color="#10b981" />
+          <StatCard label="Overdue" value={stats.overdue} color="#ef4444" />
+          {stats.mine !== null && <StatCard label="My Active" value={stats.mine} color="#8b5cf6" />}
+        </div>
+      </div>
 
       {selectedTask && tasks.find(t => t.id === selectedTask) && (
         <TaskDetailModal
@@ -459,18 +609,20 @@ export default function Board() {
           topics={topics}
           owner={owner}
           repo={repo}
+          currentUser={currentUser}
           navigate={navigate}
           onClose={() => setSelectedTask(null)}
           onComplete={(taskId) => { moveTask(taskId, 'done'); setSelectedTask(null) }}
           onReopen={(taskId) => { moveTask(taskId, 'todo'); setSelectedTask(null) }}
           onSave={handleSaveTask}
+          onToggleMine={toggleMyCompletion}
         />
       )}
     </div>
   )
 }
 
-function Column({ column, tasks, syncing, topics, onDelete, onTaskClick, onComplete }) {
+function Column({ column, tasks, syncing, topics, currentUser, onDelete, onTaskClick, onComplete, onToggleMine }) {
   const { setNodeRef, isOver } = useDroppable({ id: column.id })
 
   return (
@@ -489,10 +641,12 @@ function Column({ column, tasks, syncing, topics, onDelete, onTaskClick, onCompl
               key={task.id}
               task={task}
               topics={topics}
+              currentUser={currentUser}
               isSyncing={syncing === task.id}
               onDelete={onDelete}
               onClick={() => onTaskClick(task)}
               onComplete={onComplete}
+              onToggleMine={onToggleMine}
             />
           ))}
         </div>
@@ -501,7 +655,7 @@ function Column({ column, tasks, syncing, topics, onDelete, onTaskClick, onCompl
   )
 }
 
-function TaskCard({ task, isDragging, isSyncing, topics, onDelete, onClick, onComplete }) {
+function TaskCard({ task, isDragging, isSyncing, topics, currentUser, onDelete, onClick, onComplete, onToggleMine }) {
   const topic = task.topicId ? (topics || []).find((t) => t.id === task.topicId) : null
   const topicCat = topic ? (TOPIC_CATEGORIES[topic.category] || TOPIC_CATEGORIES.research) : null
   const { attributes, listeners, setNodeRef, transform, transition, isDragging: isSortDragging } = useSortable({ id: task.id })
@@ -580,15 +734,13 @@ function TaskCard({ task, isDragging, isSyncing, topics, onDelete, onClick, onCo
         <p className="text-xs text-on-surface-dim mt-1 line-clamp-2">{task.description}</p>
       )}
       <div className="flex items-center gap-2 mt-2.5">
-        {task.assignee && (
-          <div className="flex items-center gap-1.5">
-            <img
-              src={`https://github.com/${task.assignee}.png?size=32`}
-              alt={task.assignee}
-              className="w-5 h-5 rounded-full"
-            />
-            <span className="text-xs text-on-surface-dim">{task.assignee}</span>
-          </div>
+        {getAssignees(task).length > 0 && (
+          <AssigneeStack
+            task={task}
+            size={20}
+            currentUser={currentUser}
+            onToggleMine={onToggleMine ? () => onToggleMine(task.id) : undefined}
+          />
         )}
         {task.dueDate && (
           <span className={`text-xs ml-auto ${overdue ? 'text-red-500 font-medium' : 'text-on-surface-dim'}`}>
@@ -628,7 +780,7 @@ function TaskCard({ task, isDragging, isSyncing, topics, onDelete, onClick, onCo
   )
 }
 
-function TaskDetailModal({ task, members = [], topics = [], owner, repo, navigate, onClose, onComplete, onReopen, onSave }) {
+function TaskDetailModal({ task, members = [], topics = [], owner, repo, currentUser, navigate, onClose, onComplete, onReopen, onSave, onToggleMine }) {
   const taskTopic = task.topicId ? topics.find((t) => t.id === task.topicId) : null
   const taskTopicCat = taskTopic ? (TOPIC_CATEGORIES[taskTopic.category] || TOPIC_CATEGORIES.research) : null
   const column = COLUMNS.find((c) => c.id === task.status)
@@ -656,7 +808,7 @@ function TaskDetailModal({ task, members = [], topics = [], owner, repo, navigat
   }, [owner, repo, task.title])
   const [editTitle, setEditTitle] = useState(task.title)
   const [editDescription, setEditDescription] = useState(task.description || '')
-  const [editAssignee, setEditAssignee] = useState(task.assignee || '')
+  const [editAssignees, setEditAssignees] = useState(getAssignees(task))
   const [editDueDate, setEditDueDate] = useState(task.dueDate || '')
   const [editLabels, setEditLabels] = useState(task.labels || [])
   const [editLinkedFiles, setEditLinkedFiles] = useState((task.linkedFiles || []).join(', '))
@@ -667,7 +819,7 @@ function TaskDetailModal({ task, members = [], topics = [], owner, repo, navigat
   function enterEditMode() {
     setEditTitle(task.title)
     setEditDescription(task.description || '')
-    setEditAssignee(task.assignee || '')
+    setEditAssignees(getAssignees(task))
     setEditDueDate(task.dueDate || '')
     setEditLabels([...(task.labels || [])])
     setEditLinkedFiles((task.linkedFiles || []).join(', '))
@@ -688,10 +840,14 @@ function TaskDetailModal({ task, members = [], topics = [], owner, repo, navigat
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean)
+    // Drop completedBy entries for users no longer assigned.
+    const prevCompleted = getCompletedBy(task).filter((u) => editAssignees.includes(u))
     const updates = {
       title: editTitle.trim(),
       description: editDescription.trim(),
-      assignee: editAssignee || null,
+      assignees: editAssignees,
+      assignee: null,                       // clear legacy field
+      completedBy: prevCompleted,
       dueDate: editDueDate || null,
       labels: editLabels,
       linkedFiles,
@@ -822,28 +978,57 @@ function TaskDetailModal({ task, members = [], topics = [], owner, repo, navigat
 
         {/* Body */}
         <div className="p-6 space-y-5">
-          {/* Assignee */}
+          {/* Assignees + per-user progress */}
           <div>
-            <p className="text-xs font-medium text-on-surface-dim uppercase tracking-wider mb-2">Assignee</p>
+            <div className="flex items-baseline justify-between mb-2">
+              <p className="text-xs font-medium text-on-surface-dim uppercase tracking-wider">Assignees</p>
+              {!isEditing && getAssignees(task).length > 1 && (
+                <p className="text-[11px] text-on-surface-dim">
+                  {getCompletedBy(task).filter((u) => getAssignees(task).includes(u)).length} / {getAssignees(task).length} done
+                </p>
+              )}
+            </div>
             {isEditing ? (
-              <select
-                value={editAssignee}
-                onChange={(e) => setEditAssignee(e.target.value)}
-                className="w-full px-3 py-2 bg-surface-low rounded-lg border-0 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]"
-              >
-                <option value="">Unassigned</option>
-                {members.map((m) => (
-                  <option key={m.login} value={m.login}>{m.login}</option>
-                ))}
-              </select>
-            ) : task.assignee ? (
-              <div className="flex items-center gap-2.5">
-                <img
-                  src={`https://github.com/${task.assignee}.png?size=40`}
-                  alt={task.assignee}
-                  className="w-7 h-7 rounded-full"
-                />
-                <span className="text-sm text-on-surface font-medium">{task.assignee}</span>
+              <AssigneePicker members={members} value={editAssignees} onChange={setEditAssignees} />
+            ) : getAssignees(task).length > 0 ? (
+              <div className="space-y-1.5">
+                {getAssignees(task).map((u) => {
+                  const done = getCompletedBy(task).includes(u)
+                  const isMe = currentUser && u === currentUser.login
+                  const ring = done ? 'ring-emerald-500' : 'ring-gray-300'
+                  return (
+                    <div key={u} className="flex items-center gap-2.5 py-1">
+                      <img
+                        src={`https://github.com/${u}.png?size=40`}
+                        alt={u}
+                        className={`w-7 h-7 rounded-full ring-2 ${ring}`}
+                      />
+                      <span className="text-sm text-on-surface font-medium flex-1">
+                        {u}{isMe && <span className="ml-1 text-xs text-on-surface-dim">(you)</span>}
+                      </span>
+                      {isMe && onToggleMine ? (
+                        <button
+                          type="button"
+                          onClick={() => onToggleMine(task.id)}
+                          className={`shrink-0 w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors cursor-pointer ${
+                            done
+                              ? 'bg-emerald-500 border-emerald-500 text-white'
+                              : 'border-gray-300 hover:border-emerald-400 text-transparent hover:text-emerald-400'
+                          }`}
+                          title={done ? 'Unmark my completion' : 'Mark my part complete'}
+                        >
+                          <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                          </svg>
+                        </button>
+                      ) : (
+                        <span className={`text-[11px] ${done ? 'text-emerald-600' : 'text-on-surface-dim'}`}>
+                          {done ? 'Done' : 'Pending'}
+                        </span>
+                      )}
+                    </div>
+                  )
+                })}
               </div>
             ) : (
               <p className="text-sm text-on-surface-dim">Unassigned</p>
@@ -1070,9 +1255,117 @@ function TaskDetailModal({ task, members = [], topics = [], owner, repo, navigat
   )
 }
 
+function AssigneePicker({ members, value, onChange }) {
+  const remaining = members.filter((m) => !value.includes(m.login))
+  return (
+    <div>
+      <div className="flex flex-wrap gap-1.5 mb-1.5">
+        {value.length === 0 && <span className="text-sm text-on-surface-dim">Unassigned</span>}
+        {value.map((u) => (
+          <span key={u} className="inline-flex items-center gap-1.5 pl-1 pr-2 py-1 bg-primary-surface text-primary rounded-full text-xs font-medium">
+            <img src={`https://github.com/${u}.png?size=24`} alt={u} className="w-5 h-5 rounded-full" />
+            {u}
+            <button
+              type="button"
+              onClick={() => onChange(value.filter((x) => x !== u))}
+              className="w-3.5 h-3.5 rounded-full hover:bg-primary/20 flex items-center justify-center cursor-pointer"
+              title="Remove"
+            >
+              <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </span>
+        ))}
+      </div>
+      {remaining.length > 0 && (
+        <select
+          value=""
+          onChange={(e) => { if (e.target.value) onChange([...value, e.target.value]) }}
+          className="px-3 py-1.5 bg-surface-low rounded-lg border-0 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]"
+        >
+          <option value="">+ Add assignee…</option>
+          {remaining.map((m) => (
+            <option key={m.login} value={m.login}>{m.login}</option>
+          ))}
+        </select>
+      )}
+    </div>
+  )
+}
+
+function StatCard({ label, value, color }) {
+  return (
+    <div className="bg-surface-card rounded-xl shadow-card px-4 py-3 flex items-center gap-3">
+      <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: color }} />
+      <div>
+        <p className="text-lg font-display font-bold text-on-surface leading-tight">{value}</p>
+        <p className="text-[11px] text-on-surface-dim">{label}</p>
+      </div>
+    </div>
+  )
+}
+
+function DeleteTaskDialog({ task, refCount, deleting, onConfirm, onCancel }) {
+  useEffect(() => {
+    function handleKey(e) {
+      if (e.key === 'Escape' && !deleting) onCancel()
+    }
+    window.addEventListener('keydown', handleKey)
+    return () => window.removeEventListener('keydown', handleKey)
+  }, [onCancel, deleting])
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center" onClick={() => !deleting && onCancel()}>
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
+      <div
+        className="relative bg-surface-card rounded-2xl shadow-float w-full max-w-sm mx-4 p-6"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start gap-3">
+          <div className="w-10 h-10 rounded-full bg-[var(--color-error-surface)] flex items-center justify-center shrink-0">
+            <svg className="w-5 h-5 text-[var(--color-error)]" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.732 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" />
+            </svg>
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3 className="font-display font-semibold text-on-surface">Delete task?</h3>
+            <p className="text-sm text-on-surface-variant mt-1 break-words">
+              "{task.title}" will be removed permanently.
+            </p>
+            {refCount > 0 && (
+              <p className="text-xs text-on-surface-dim mt-2">
+                This task is referenced in {refCount} message{refCount === 1 ? '' : 's'}. Those references will render as deleted.
+              </p>
+            )}
+          </div>
+        </div>
+        <div className="flex justify-end gap-2 mt-5">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={deleting}
+            className="px-4 py-2 text-on-surface-variant text-sm rounded-full hover:bg-surface-low transition-colors cursor-pointer disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={deleting}
+            className="px-4 py-2 bg-[var(--color-error)] text-white text-sm rounded-full hover:opacity-90 transition-opacity cursor-pointer disabled:opacity-50 font-medium"
+          >
+            {deleting ? 'Deleting…' : 'Delete'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function NewTaskForm({ members = [], topics = [], onSubmit, onCancel }) {
   const [title, setTitle] = useState('')
-  const [assignee, setAssignee] = useState('')
+  const [assignees, setAssignees] = useState([])
   const [description, setDescription] = useState('')
   const [dueDate, setDueDate] = useState('')
   const [linkedFilesStr, setLinkedFilesStr] = useState('')
@@ -1088,7 +1381,7 @@ function NewTaskForm({ members = [], topics = [], onSubmit, onCancel }) {
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean)
-    await onSubmit(title.trim(), assignee, description.trim(), dueDate || null, linkedFiles, topicId || null)
+    await onSubmit(title.trim(), assignees, description.trim(), dueDate || null, linkedFiles, topicId || null)
     setSubmitting(false)
   }
 
@@ -1108,19 +1401,10 @@ function NewTaskForm({ members = [], topics = [], onSubmit, onCancel }) {
           />
         </div>
 
-        {/* Assignee */}
+        {/* Assignees */}
         <div className="col-span-2 sm:col-span-1">
           <label className="block text-xs font-medium text-on-surface-dim mb-1.5">Assign to</label>
-          <select
-            value={assignee}
-            onChange={(e) => setAssignee(e.target.value)}
-            className="w-full px-3 py-2 bg-surface-low rounded-lg text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-blue-500/30"
-          >
-            <option value="">Unassigned</option>
-            {members.map((m) => (
-              <option key={m.login} value={m.login}>{m.login}</option>
-            ))}
-          </select>
+          <AssigneePicker members={members} value={assignees} onChange={setAssignees} />
         </div>
 
         {/* Description */}

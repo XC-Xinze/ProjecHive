@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { useStore } from '../store'
 import { loadMessages, listGitSyncRepos, getConfig, isRepoInitialized, initializeRepo, listDirectory, getFileContent, getLatestCommitSha } from '../services/github'
+import SearchPalette from '../components/SearchPalette'
+import NotesDrawer from '../components/NotesDrawer'
 
 const navItems = [
   { to: '/', label: 'Overview', icon: HomeIcon },
@@ -36,6 +38,10 @@ export default function Layout() {
   const [showNotifs, setShowNotifs] = useState(false)
   const notifRef = useRef(null)
 
+  // Search palette + Notes drawer
+  const [showSearch, setShowSearch] = useState(false)
+  const [showNotes, setShowNotes] = useState(false)
+
   // Sync animation + remote update detection
   const shaKey = `projecthive-sha-${owner}-${repo}`
   const syncFlagKey = 'projecthive-syncing'
@@ -69,7 +75,8 @@ export default function Layout() {
 
     // Tasks assigned to me
     for (const t of tasks) {
-      if (t.assignee !== me) continue
+      const assignees = Array.isArray(t.assignees) ? t.assignees : (t.assignee ? [t.assignee] : [])
+      if (!assignees.includes(me)) continue
       notifs.push({
         id: `task-${t.id}`,
         type: 'task',
@@ -143,6 +150,18 @@ export default function Layout() {
     }
     document.addEventListener('mousedown', handleClick)
     return () => document.removeEventListener('mousedown', handleClick)
+  }, [])
+
+  // ⌘K / Ctrl+K to open search
+  useEffect(() => {
+    function handle(e) {
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+        e.preventDefault()
+        setShowSearch((v) => !v)
+      }
+    }
+    window.addEventListener('keydown', handle)
+    return () => window.removeEventListener('keydown', handle)
   }, [])
 
   async function toggleSwitcher() {
@@ -271,29 +290,47 @@ export default function Layout() {
           )}
         </div>
 
-        {/* Notification bell + New Task */}
-        <div className="px-3 mb-4 flex items-center gap-2">
+        {/* Quick actions: Search · Notes · Bell */}
+        <div className="px-3 mb-4 grid grid-cols-3 gap-1">
+          {/* Search */}
           <button
-            onClick={() => navigate('/board')}
-            className="flex-1 gradient-primary text-white rounded-full px-4 py-2 text-sm font-semibold cursor-pointer hover:opacity-90 transition-opacity flex items-center justify-center gap-1.5"
+            onClick={() => setShowSearch(true)}
+            title="Search (⌘K)"
+            className="flex flex-col items-center gap-0.5 py-2 rounded-xl hover:bg-surface transition-colors cursor-pointer text-on-surface-variant hover:text-on-surface"
           >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+            <svg className="w-[18px] h-[18px]" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" />
             </svg>
-            New Task
+            <span className="text-[10px]">Search</span>
+          </button>
+          {/* Notes */}
+          <button
+            onClick={() => setShowNotes(true)}
+            title="My notes"
+            className="flex flex-col items-center gap-0.5 py-2 rounded-xl hover:bg-surface transition-colors cursor-pointer text-on-surface-variant hover:text-on-surface"
+          >
+            <svg className="w-[18px] h-[18px]" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0 1 15.75 21H5.25A2.25 2.25 0 0 1 3 18.75V8.25A2.25 2.25 0 0 1 5.25 6H10" />
+            </svg>
+            <span className="text-[10px]">Notes</span>
           </button>
           {/* Notification bell */}
           <div className="relative" ref={notifRef}>
             <button
               onClick={() => setShowNotifs(!showNotifs)}
-              className="relative p-2 rounded-xl hover:bg-surface transition-colors cursor-pointer"
+              className="w-full flex flex-col items-center gap-0.5 py-2 rounded-xl hover:bg-surface transition-colors cursor-pointer text-on-surface-variant hover:text-on-surface"
             >
-              <BellIcon />
-              {unreadNotifCount > 0 && (
-                <span className="absolute -top-0.5 -right-0.5 w-4 h-4 gradient-primary text-white text-[9px] font-bold rounded-full flex items-center justify-center leading-none">
-                  {unreadNotifCount > 9 ? '9+' : unreadNotifCount}
-                </span>
-              )}
+              <div className="relative">
+                <svg className="w-[18px] h-[18px]" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M14.857 17.082a23.848 23.848 0 0 0 5.454-1.31A8.967 8.967 0 0 1 18 9.75V9A6 6 0 0 0 6 9v.75a8.967 8.967 0 0 1-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 0 1-5.714 0m5.714 0a3 3 0 1 1-5.714 0" />
+                </svg>
+                {unreadNotifCount > 0 && (
+                  <span className="absolute -top-1 -right-1.5 min-w-[14px] h-[14px] px-0.5 gradient-primary text-white text-[9px] font-bold rounded-full flex items-center justify-center leading-none">
+                    {unreadNotifCount > 9 ? '9+' : unreadNotifCount}
+                  </span>
+                )}
+              </div>
+              <span className="text-[10px]">Inbox</span>
             </button>
 
             {/* Notification dropdown */}
@@ -406,6 +443,22 @@ export default function Layout() {
           </div>
         )}
       </main>
+
+      {/* Personal notes drawer (opened from sidebar) */}
+      <NotesDrawer
+        open={showNotes}
+        onClose={() => setShowNotes(false)}
+        projectKey={`${owner}/${repo}`}
+      />
+
+      {/* Global search palette (⌘K) */}
+      <SearchPalette
+        open={showSearch}
+        onClose={() => setShowSearch(false)}
+        owner={owner}
+        repo={repo}
+        navigate={navigate}
+      />
     </div>
   )
 }

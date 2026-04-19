@@ -687,10 +687,20 @@ export default function Messages() {
                       className="w-full text-left px-3 py-1.5 text-sm hover:bg-surface-low flex items-center gap-2 cursor-pointer">
                       <span className={`w-2 h-2 rounded-full shrink-0 ${statusDotColor(t.status)}`} />
                       <span className="truncate flex-1">{t.title}</span>
-                      {t.assignee && (
-                        <img src={`https://github.com/${t.assignee}.png?size=20`} alt={t.assignee}
-                          className="w-4 h-4 rounded-full shrink-0" />
-                      )}
+                      {(() => {
+                        const a = Array.isArray(t.assignees) ? t.assignees : (t.assignee ? [t.assignee] : [])
+                        if (a.length === 0) return null
+                        return (
+                          <div className="flex items-center shrink-0">
+                            {a.slice(0, 2).map((u, i) => (
+                              <img key={u} src={`https://github.com/${u}.png?size=20`} alt={u}
+                                className="w-4 h-4 rounded-full"
+                                style={{ marginLeft: i === 0 ? 0 : -5 }} />
+                            ))}
+                            {a.length > 2 && <span className="text-[10px] text-on-surface-dim ml-1">+{a.length - 2}</span>}
+                          </div>
+                        )
+                      })()}
                     </button>
                   )) : (
                     <div className="px-3 py-1.5 text-xs text-on-surface-dim">No tasks found</div>
