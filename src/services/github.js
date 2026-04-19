@@ -2,6 +2,7 @@ import { Octokit } from '@octokit/rest'
 import { TEMPLATE_CONFIG, generateReadme, TEMPLATE_TASK, REPO_PREFIX } from './template'
 
 let octokit = null
+let onCommitCallback = null
 
 export function initOctokit(token) {
   octokit = new Octokit({ auth: token })
@@ -11,6 +12,20 @@ export function initOctokit(token) {
 export function getOctokit() {
   if (!octokit) throw new Error('Octokit not initialized')
   return octokit
+}
+
+// Register a callback invoked with the new commit SHA after every write.
+// Used to mark commits the local app produced so the sync indicator and
+// list refreshes can distinguish self-writes from external updates.
+export function setOnCommit(cb) {
+  onCommitCallback = cb
+}
+
+function notifyCommit(data) {
+  const sha = data?.commit?.sha
+  if (sha && onCommitCallback) {
+    try { onCommitCallback(sha) } catch {}
+  }
 }
 
 // Validate token + repo access
@@ -72,6 +87,12 @@ export async function createProject(name, description, codeRepoUrl, isPrivate = 
   return repo
 }
 
+// Permanently delete a repository. Requires the token to have `delete_repo` scope.
+// Throws on failure; caller should handle 403 (missing scope) and 404 (gone) distinctly.
+export async function deleteRepo(owner, repo) {
+  await getOctokit().repos.delete({ owner, repo })
+}
+
 // Fetch file content (decoded)
 export async function getFileContent(owner, repo, path, ref) {
   const params = { owner, repo, path }
@@ -107,6 +128,7 @@ export async function updateFile(owner, repo, path, content, message, sha) {
   }
   if (sha) params.sha = sha
   const { data } = await getOctokit().repos.createOrUpdateFileContents(params)
+  notifyCommit(data)
   return data
 }
 
@@ -119,6 +141,7 @@ export async function deleteFile(owner, repo, path, message, sha) {
     message,
     sha,
   })
+  notifyCommit(data)
   return data
 }
 
@@ -289,9 +312,55 @@ export async function createMessage(owner, repo, msg) {
   const data = { id, ...msg, createdAt: new Date().toISOString() }
   const mentions = (msg.body.match(/@([\w-]+)/g) || []).map((m) => m.slice(1))
   data.mentions = mentions
-  await updateFile(owner, repo, `messages/${id}.json`,
+  const path = `messages/${id}.json`
+  const result = await updateFile(owner, repo, path,
     JSON.stringify(data, null, 2), `[discuss] ${msg.body.slice(0, 60)}`)
-  return data
+  return { ...data, _path: path, _sha: result.content.sha }
+}
+
+// ── Topics CRUD (topics/*.json) ──
+
+export async function loadTopics(owner, repo) {
+  const files = await listDirectory(owner, repo, 'topics')
+  const jsonFiles = files.filter((f) => f.name.endsWith('.json'))
+  const topics = await Promise.all(jsonFiles.map(async (f) => {
+    const { content, sha } = await getFileContent(owner, repo, f.path)
+    return { ...JSON.parse(content), _path: f.path, _sha: sha }
+  }))
+  return topics.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+}
+
+export async function createTopic(owner, repo, topic) {
+  const id = `topic-${Date.now()}`
+  const data = {
+    id,
+    title: topic.title,
+    category: topic.category,
+    status: 'open',
+    createdBy: topic.createdBy || 'unknown',
+    createdAt: new Date().toISOString(),
+    doneAt: null,
+  }
+  const path = `topics/${id}.json`
+  const result = await updateFile(owner, repo, path,
+    JSON.stringify(data, null, 2), `[topic] Open "${topic.title}"`)
+  return { ...data, _path: path, _sha: result.content.sha }
+}
+
+export async function updateTopic(owner, repo, topic, updates) {
+  const { content, sha } = await getFileContent(owner, repo, topic._path)
+  const latest = JSON.parse(content)
+  Object.assign(latest, updates)
+  const result = await updateFile(owner, repo, topic._path,
+    JSON.stringify(latest, null, 2),
+    updates.status === 'done' ? `[topic] Archive "${latest.title}"` : `[topic] Update "${latest.title}"`,
+    sha)
+  return { ...latest, _path: topic._path, _sha: result.content.sha }
+}
+
+export async function deleteTopic(owner, repo, topic) {
+  const { sha } = await getFileContent(owner, repo, topic._path)
+  await deleteFile(owner, repo, topic._path, `[topic] Delete "${topic.title}"`, sha)
 }
 
 // Upload a binary file (already base64 encoded) to assets/
@@ -302,6 +371,7 @@ export async function uploadAsset(owner, repo, fileName, base64Content) {
     message: `[attach] Upload ${fileName}`,
     content: base64Content,
   })
+  notifyCommit(data)
   return { path, sha: data.content.sha, url: data.content.html_url }
 }
 
@@ -352,6 +422,11 @@ export async function deleteCommitFromHistory(owner, repo, targetSha) {
     sha: currentParent,
     force: true,
   })
+  // Treat the rewritten HEAD as a self-produced commit so the sync indicator
+  // doesn't flash for our own force-push.
+  if (onCommitCallback) {
+    try { onCommitCallback(currentParent) } catch {}
+  }
 }
 
 // Fetch commits from an external repo (code repo) using the same token

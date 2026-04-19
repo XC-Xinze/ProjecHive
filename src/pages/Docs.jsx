@@ -11,8 +11,15 @@ const TYPE_OPTIONS = [
 ]
 
 export default function Docs() {
-  const { owner, repo, currentUser } = useStore()
+  const { owner, repo, currentUser, addPendingWrite, mergePending } = useStore()
   const [docs, setDocs] = useState([])
+
+  // Merge remote docs with locally-pending creates not yet propagated.
+  function mergeDocs(remote) {
+    const survivors = mergePending('docs', remote)
+    if (!survivors.length) return remote
+    return [...survivors, ...remote] // newest-first; pending are most recent
+  }
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [filterType, setFilterType] = useState(null)
@@ -28,7 +35,7 @@ export default function Docs() {
 
   useEffect(() => {
     setLoading(true)
-    loadDocs(owner, repo).then(setDocs).finally(() => setLoading(false))
+    loadDocs(owner, repo).then((d) => setDocs(mergeDocs(d))).finally(() => setLoading(false))
   }, [owner, repo])
 
   async function handleCreate(e) {
@@ -42,6 +49,7 @@ export default function Docs() {
         description: desc.trim(),
         sharedBy: currentUser?.login || 'unknown',
       })
+      addPendingWrite('docs', doc)
       setDocs((prev) => [doc, ...prev])
       setShowForm(false)
       setTitle(''); setUrl(''); setDesc('')
@@ -87,11 +95,12 @@ export default function Docs() {
   async function handleDelete(doc) {
     if (!confirm(`Delete "${doc.title}"?`)) return
     setDocs((prev) => prev.filter((d) => d.id !== doc.id))
+    useStore.getState().removePendingWrite('docs', doc.id)
     try {
       const { sha } = await getFileContent(owner, repo, doc._path)
       await deleteFile(owner, repo, doc._path, `[doc] Delete "${doc.title}"`, sha)
     } catch (err) {
-      loadDocs(owner, repo).then(setDocs)
+      loadDocs(owner, repo).then((d) => setDocs(mergeDocs(d)))
       alert(`Delete failed: ${err.message}`)
     }
   }

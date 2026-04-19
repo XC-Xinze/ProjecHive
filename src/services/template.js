@@ -63,6 +63,19 @@ export const TEMPLATE_TASK = {
   createdAt: new Date().toISOString(),
 }
 
+// Topic category definitions. Topics group ad-hoc discussions and short-lived
+// task batches. Categories are fixed (no free-form) so the sidebar stays tidy.
+// Note: "discussion" was deliberately excluded — Messages itself is the
+// discussion surface; topics need to add structure beyond that.
+export const TOPIC_CATEGORIES = {
+  research: { label: 'Research', color: 'bg-blue-100 text-blue-700', dot: 'bg-blue-500' },
+  admin:    { label: 'Admin',    color: 'bg-gray-100 text-gray-700', dot: 'bg-gray-500' },
+  temp:     { label: 'Temp',     color: 'bg-amber-100 text-amber-700', dot: 'bg-amber-500' },
+  planning: { label: 'Planning', color: 'bg-emerald-100 text-emerald-700', dot: 'bg-emerald-500' },
+}
+
+export const TOPIC_CATEGORY_KEYS = Object.keys(TOPIC_CATEGORIES)
+
 // Commit message keyword definitions
 // Usage: prefix commit messages with [keyword]
 // e.g. "[update] Finished experiment A" or "[issue] Data pipeline broken"

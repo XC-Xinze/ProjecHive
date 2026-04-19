@@ -93,4 +93,57 @@ export const useStore = create((set) => ({
   // Sync trigger — increment to tell pages to re-fetch
   syncKey: 0,
   triggerSync: () => set((state) => ({ syncKey: state.syncKey + 1 })),
+
+  // Latest commit SHA produced by THIS client. Used by Layout to suppress the
+  // "Updates available" badge for our own commits.
+  lastSelfCommitSha: '',
+  markSelfCommit: (sha) => {
+    if (!sha) return
+    set({ lastSelfCommitSha: sha })
+  },
+
+  // Items created locally but not yet confirmed by a remote refetch. Keeps the
+  // optimistic record alive across page navigation + GitHub propagation lag,
+  // so newly-created tasks/messages/docs don't briefly disappear.
+  // Shape: { [kind]: { [id]: { item, createdAt } } }
+  pendingWrites: {},
+  addPendingWrite: (kind, item) => set((state) => {
+    if (!item?.id) return state
+    const bucket = { ...(state.pendingWrites[kind] || {}) }
+    bucket[item.id] = { item, createdAt: Date.now() }
+    return { pendingWrites: { ...state.pendingWrites, [kind]: bucket } }
+  }),
+  removePendingWrite: (kind, id) => set((state) => {
+    const bucket = state.pendingWrites[kind]
+    if (!bucket || !bucket[id]) return state
+    const next = { ...bucket }
+    delete next[id]
+    return { pendingWrites: { ...state.pendingWrites, [kind]: next } }
+  }),
+  // Merge a list of pending items of a given kind into a freshly-loaded list.
+  // Drops any pending entry that already appears remotely (confirmed) or that
+  // is older than 5 minutes (assume failed write or someone else deleted it).
+  mergePending: (kind, remoteList) => {
+    const bucket = useStore.getState().pendingWrites[kind] || {}
+    const remoteIds = new Set(remoteList.map((r) => r?.id).filter(Boolean))
+    const now = Date.now()
+    const TTL = 5 * 60 * 1000
+    const survivors = []
+    const toRemove = []
+    for (const [id, { item, createdAt }] of Object.entries(bucket)) {
+      if (remoteIds.has(id) || now - createdAt > TTL) {
+        toRemove.push(id)
+      } else {
+        survivors.push(item)
+      }
+    }
+    if (toRemove.length > 0) {
+      set((state) => {
+        const next = { ...(state.pendingWrites[kind] || {}) }
+        toRemove.forEach((id) => delete next[id])
+        return { pendingWrites: { ...state.pendingWrites, [kind]: next } }
+      })
+    }
+    return survivors
+  },
 }))

@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { useStore } from './store'
-import { initOctokit, getCurrentUser } from './services/github'
+import { initOctokit, getCurrentUser, setOnCommit } from './services/github'
 import { applyTheme } from './themes'
 import Login from './pages/Login'
 import ProjectList from './pages/ProjectList'
@@ -35,6 +35,12 @@ export default function App() {
   useEffect(() => {
     applyTheme(theme)
   }, [theme])
+
+  // Bridge github.js write callbacks → store, once.
+  useEffect(() => {
+    setOnCommit((sha) => useStore.getState().markSelfCommit(sha))
+    return () => setOnCommit(null)
+  }, [])
 
   useEffect(() => {
     if (isLoggedIn && token) {

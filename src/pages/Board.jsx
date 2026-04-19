@@ -17,7 +17,8 @@ import {
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { useStore } from '../store'
-import { listDirectory, getFileContent, updateFile, deleteFile, getCollaborators, loadMessages } from '../services/github'
+import { listDirectory, getFileContent, updateFile, deleteFile, getCollaborators, loadMessages, loadTopics } from '../services/github'
+import { TOPIC_CATEGORIES } from '../services/template'
 import ConflictDialog from '../components/ConflictDialog'
 
 const COLUMNS = [
@@ -41,11 +42,12 @@ function isOverdue(dateStr) {
 }
 
 export default function Board() {
-  const { owner, repo, currentUser } = useStore()
+  const { owner, repo, currentUser, addPendingWrite, mergePending } = useStore()
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const [tasks, setTasks] = useState([])
   const [members, setMembers] = useState([])
+  const [topics, setTopics] = useState([])
   const [loading, setLoading] = useState(true)
   const [syncing, setSyncing] = useState(null)
   const [activeTask, setActiveTask] = useState(null)
@@ -62,11 +64,13 @@ export default function Board() {
   const loadTasks = useCallback(async () => {
     setLoading(true)
     try {
-      const [files, collabs] = await Promise.all([
+      const [files, collabs, tps] = await Promise.all([
         listDirectory(owner, repo, 'tasks'),
         getCollaborators(owner, repo),
+        loadTopics(owner, repo).catch(() => []),
       ])
       setMembers(collabs)
+      setTopics(tps)
       const jsonFiles = files.filter((f) => f.name.endsWith('.json'))
       const loaded = await Promise.all(
         jsonFiles.map(async (f) => {
@@ -75,13 +79,15 @@ export default function Board() {
           return { ...data, _path: f.path, _sha: sha }
         })
       )
-      setTasks(loaded)
+      // Preserve locally-pending tasks not yet visible from GitHub.
+      const survivors = mergePending('tasks', loaded)
+      setTasks(survivors.length ? [...loaded, ...survivors] : loaded)
     } catch {
       setTasks([])
     } finally {
       setLoading(false)
     }
-  }, [owner, repo])
+  }, [owner, repo, mergePending])
 
   useEffect(() => { loadTasks() }, [loadTasks])
 
@@ -169,7 +175,7 @@ export default function Board() {
     await loadTasks()
   }
 
-  async function createTask(title, assignee, description, dueDate, linkedFiles) {
+  async function createTask(title, assignee, description, dueDate, linkedFiles, topicId) {
     const id = `task-${Date.now()}`
     const task = {
       id,
@@ -179,6 +185,7 @@ export default function Board() {
       description: description || '',
       dueDate: dueDate || null,
       linkedFiles: linkedFiles || [],
+      topicId: topicId || null,
       createdBy: currentUser?.login || 'unknown',
       createdAt: new Date().toISOString(),
       labels: [],
@@ -191,7 +198,9 @@ export default function Board() {
         JSON.stringify(task, null, 2),
         `[task] Create "${title}"`,
       )
-      setTasks((prev) => [...prev, { ...task, _path: `tasks/${id}.json`, _sha: result.content.sha }])
+      const created = { ...task, _path: `tasks/${id}.json`, _sha: result.content.sha }
+      addPendingWrite('tasks', created)
+      setTasks((prev) => [...prev, created])
       setShowForm(false)
     } catch (err) {
       alert(`Failed to create task: ${err.message}`)
@@ -218,6 +227,7 @@ export default function Board() {
     if (!confirm(`Delete "${task.title}"?${refWarning}`)) return
 
     setTasks((prev) => prev.filter((t) => t.id !== taskId))
+    useStore.getState().removePendingWrite('tasks', taskId)
     try {
       const { sha } = await getFileContent(owner, repo, task._path)
       await deleteFile(owner, repo, task._path, `[task] Delete "${task.title}"`, sha)
@@ -395,7 +405,7 @@ export default function Board() {
         )}
       </div>
 
-      {showForm && <NewTaskForm members={members} onSubmit={createTask} onCancel={() => setShowForm(false)} />}
+      {showForm && <NewTaskForm members={members} topics={topics} onSubmit={createTask} onCancel={() => setShowForm(false)} />}
 
       <DndContext
         sensors={sensors}
@@ -415,6 +425,7 @@ export default function Board() {
                 return true
               })}
               syncing={syncing}
+              topics={topics}
               onDelete={handleDelete}
               onTaskClick={handleTaskClick}
               onComplete={(taskId) => moveTask(taskId, 'done')}
@@ -445,6 +456,7 @@ export default function Board() {
         <TaskDetailModal
           task={tasks.find(t => t.id === selectedTask)}
           members={members}
+          topics={topics}
           owner={owner}
           repo={repo}
           navigate={navigate}
@@ -458,7 +470,7 @@ export default function Board() {
   )
 }
 
-function Column({ column, tasks, syncing, onDelete, onTaskClick, onComplete }) {
+function Column({ column, tasks, syncing, topics, onDelete, onTaskClick, onComplete }) {
   const { setNodeRef, isOver } = useDroppable({ id: column.id })
 
   return (
@@ -476,6 +488,7 @@ function Column({ column, tasks, syncing, onDelete, onTaskClick, onComplete }) {
             <TaskCard
               key={task.id}
               task={task}
+              topics={topics}
               isSyncing={syncing === task.id}
               onDelete={onDelete}
               onClick={() => onTaskClick(task)}
@@ -488,7 +501,9 @@ function Column({ column, tasks, syncing, onDelete, onTaskClick, onComplete }) {
   )
 }
 
-function TaskCard({ task, isDragging, isSyncing, onDelete, onClick, onComplete }) {
+function TaskCard({ task, isDragging, isSyncing, topics, onDelete, onClick, onComplete }) {
+  const topic = task.topicId ? (topics || []).find((t) => t.id === task.topicId) : null
+  const topicCat = topic ? (TOPIC_CATEGORIES[topic.category] || TOPIC_CATEGORIES.research) : null
   const { attributes, listeners, setNodeRef, transform, transition, isDragging: isSortDragging } = useSortable({ id: task.id })
   const pointerStartRef = useRef(null)
 
@@ -584,9 +599,18 @@ function TaskCard({ task, isDragging, isSyncing, onDelete, onClick, onComplete }
           <span className="text-xs text-primary ml-auto animate-pulse">syncing...</span>
         )}
       </div>
-      {task.labels?.length > 0 && (
+      {(task.labels?.length > 0 || topic) && (
         <div className="flex gap-1 mt-2 flex-wrap">
-          {task.labels.map((l) => (
+          {topic && (
+            <span
+              className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium ${topicCat.color}`}
+              title={`Topic: ${topic.title}`}
+            >
+              <span className={`w-1 h-1 rounded-full ${topicCat.dot}`} />
+              #!{topic.title}
+            </span>
+          )}
+          {task.labels?.map((l) => (
             <span key={l} className="px-1.5 py-0.5 bg-primary-surface text-primary rounded text-[10px] font-medium">{l}</span>
           ))}
         </div>
@@ -604,7 +628,9 @@ function TaskCard({ task, isDragging, isSyncing, onDelete, onClick, onComplete }
   )
 }
 
-function TaskDetailModal({ task, members = [], owner, repo, navigate, onClose, onComplete, onReopen, onSave }) {
+function TaskDetailModal({ task, members = [], topics = [], owner, repo, navigate, onClose, onComplete, onReopen, onSave }) {
+  const taskTopic = task.topicId ? topics.find((t) => t.id === task.topicId) : null
+  const taskTopicCat = taskTopic ? (TOPIC_CATEGORIES[taskTopic.category] || TOPIC_CATEGORIES.research) : null
   const column = COLUMNS.find((c) => c.id === task.status)
   const overdue = task.dueDate && task.status !== 'done' && isOverdue(task.dueDate)
   const isDone = task.status === 'done'
@@ -635,6 +661,7 @@ function TaskDetailModal({ task, members = [], owner, repo, navigate, onClose, o
   const [editLabels, setEditLabels] = useState(task.labels || [])
   const [editLinkedFiles, setEditLinkedFiles] = useState((task.linkedFiles || []).join(', '))
   const [editStatus, setEditStatus] = useState(task.status)
+  const [editTopicId, setEditTopicId] = useState(task.topicId || '')
   const [newLabelInput, setNewLabelInput] = useState('')
 
   function enterEditMode() {
@@ -645,6 +672,7 @@ function TaskDetailModal({ task, members = [], owner, repo, navigate, onClose, o
     setEditLabels([...(task.labels || [])])
     setEditLinkedFiles((task.linkedFiles || []).join(', '))
     setEditStatus(task.status)
+    setEditTopicId(task.topicId || '')
     setNewLabelInput('')
     setIsEditing(true)
   }
@@ -668,6 +696,7 @@ function TaskDetailModal({ task, members = [], owner, repo, navigate, onClose, o
       labels: editLabels,
       linkedFiles,
       status: editStatus,
+      topicId: editTopicId || null,
     }
     await onSave(task.id, updates)
     setSaving(false)
@@ -818,6 +847,37 @@ function TaskDetailModal({ task, members = [], owner, repo, navigate, onClose, o
               </div>
             ) : (
               <p className="text-sm text-on-surface-dim">Unassigned</p>
+            )}
+          </div>
+
+          {/* Topic */}
+          <div>
+            <p className="text-xs font-medium text-on-surface-dim uppercase tracking-wider mb-2">Topic</p>
+            {isEditing ? (
+              <select
+                value={editTopicId}
+                onChange={(e) => setEditTopicId(e.target.value)}
+                className="w-full px-3 py-2 bg-surface-low rounded-lg border-0 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]"
+              >
+                <option value="">No topic</option>
+                {topics.filter((t) => t.status !== 'done' || t.id === task.topicId).map((t) => (
+                  <option key={t.id} value={t.id}>
+                    #!{t.title}{t.status === 'done' ? ' (archived)' : ''}
+                  </option>
+                ))}
+              </select>
+            ) : taskTopic ? (
+              <button
+                type="button"
+                onClick={() => { onClose(); navigate(`/messages?topic=${encodeURIComponent(taskTopic.title)}`) }}
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium cursor-pointer hover:underline ${taskTopicCat.color}`}
+                title="Open topic in Messages"
+              >
+                <span className={`w-1.5 h-1.5 rounded-full ${taskTopicCat.dot}`} />
+                #!{taskTopic.title}
+              </button>
+            ) : (
+              <p className="text-sm text-on-surface-dim">No topic</p>
             )}
           </div>
 
@@ -1010,13 +1070,15 @@ function TaskDetailModal({ task, members = [], owner, repo, navigate, onClose, o
   )
 }
 
-function NewTaskForm({ members = [], onSubmit, onCancel }) {
+function NewTaskForm({ members = [], topics = [], onSubmit, onCancel }) {
   const [title, setTitle] = useState('')
   const [assignee, setAssignee] = useState('')
   const [description, setDescription] = useState('')
   const [dueDate, setDueDate] = useState('')
   const [linkedFilesStr, setLinkedFilesStr] = useState('')
+  const [topicId, setTopicId] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const openTopics = topics.filter((t) => t.status !== 'done')
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -1026,7 +1088,7 @@ function NewTaskForm({ members = [], onSubmit, onCancel }) {
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean)
-    await onSubmit(title.trim(), assignee, description.trim(), dueDate || null, linkedFiles)
+    await onSubmit(title.trim(), assignee, description.trim(), dueDate || null, linkedFiles, topicId || null)
     setSubmitting(false)
   }
 
@@ -1093,6 +1155,23 @@ function NewTaskForm({ members = [], onSubmit, onCancel }) {
             placeholder="path/a.js, path/b.py"
             className="w-full px-3 py-2 bg-surface-low rounded-lg text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-blue-500/30 placeholder:text-on-surface-dim"
           />
+        </div>
+
+        {/* Topic */}
+        <div className="col-span-2">
+          <label className="block text-xs font-medium text-on-surface-dim mb-1.5">
+            Topic <span className="text-on-surface-dim font-normal">(optional)</span>
+          </label>
+          <select
+            value={topicId}
+            onChange={(e) => setTopicId(e.target.value)}
+            className="w-full px-3 py-2 bg-surface-low rounded-lg text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+          >
+            <option value="">No topic</option>
+            {openTopics.map((t) => (
+              <option key={t.id} value={t.id}>#!{t.title}</option>
+            ))}
+          </select>
         </div>
       </div>
 

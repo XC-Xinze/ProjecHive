@@ -108,10 +108,14 @@ export default function Layout() {
         // Remote update detection
         if (latestSha) {
           const seen = lastSeenShaRef.current
-          if (!seen) {
-            // First successful poll — record baseline silently
+          const selfSha = useStore.getState().lastSelfCommitSha
+          const isOurOwn = selfSha && latestSha === selfSha
+          if (!seen || isOurOwn) {
+            // First successful poll, or remote head matches our last write —
+            // silently advance baseline so we never flag our own commits.
             lastSeenShaRef.current = latestSha
             localStorage.setItem(shaKey, latestSha)
+            if (isOurOwn) setPendingUpdate(false)
           } else if (seen !== latestSha) {
             setPendingUpdate(true)
           }

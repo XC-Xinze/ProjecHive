@@ -26,7 +26,7 @@ const SORT_OPTIONS = [
 const STATUS_ORDER = { blocked: 0, doing: 1, todo: 2, done: 3 }
 
 export default function TaskList() {
-  const { owner, repo } = useStore()
+  const { owner, repo, mergePending } = useStore()
   const [tasks, setTasks] = useState([])
   const [loading, setLoading] = useState(true)
   const [sortBy, setSortBy] = useState('created')
@@ -45,13 +45,14 @@ export default function TaskList() {
           return JSON.parse(content)
         })
       )
-      setTasks(loaded)
+      const survivors = mergePending('tasks', loaded)
+      setTasks(survivors.length ? [...loaded, ...survivors] : loaded)
     } catch {
       setTasks([])
     } finally {
       setLoading(false)
     }
-  }, [owner, repo])
+  }, [owner, repo, mergePending])
 
   useEffect(() => { loadTasks() }, [loadTasks])
 

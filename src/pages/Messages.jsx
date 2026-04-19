@@ -1,7 +1,8 @@
 import { useEffect, useState, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useStore } from '../store'
-import { loadMessages, createMessage, createDoc, getCollaborators, listDirectory, getFileContent, updateFile, deleteFile, uploadAsset, getRawFileBase64 } from '../services/github'
+import { loadMessages, createMessage, createDoc, getCollaborators, listDirectory, getFileContent, updateFile, deleteFile, uploadAsset, getRawFileBase64, loadTopics, createTopic, updateTopic, deleteTopic } from '../services/github'
+import { TOPIC_CATEGORIES, TOPIC_CATEGORY_KEYS } from '../services/template'
 import { detectFileType } from '../utils/fileTypes'
 import FilePicker from '../components/FilePicker'
 
@@ -18,10 +19,11 @@ const LABEL_COLOR_MAP = Object.fromEntries(LABELS.map((l) => [l.key, l.color]))
 const REACTION_EMOJIS = ['\u{1F44D}', '\u{1F44E}', '\u{2764}\u{FE0F}', '\u{1F604}', '\u{1F389}', '\u{1F914}', '\u{1F440}', '\u{1F680}']
 
 export default function Messages() {
-  const { owner, repo, currentUser, markMsgRead } = useStore()
+  const { owner, repo, currentUser, markMsgRead, addPendingWrite, mergePending } = useStore()
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const highlightMsgId = searchParams.get('highlight')
+  const topicQuery = searchParams.get('topic')
   const [messages, setMessages] = useState([])
   const [members, setMembers] = useState([])
   const [loading, setLoading] = useState(true)
@@ -36,6 +38,7 @@ export default function Messages() {
   const [posting, setPosting] = useState(false)
   const [showMentionPicker, setShowMentionPicker] = useState(false)
   const [showTaskPicker, setShowTaskPicker] = useState(false)
+  const [showTopicPicker, setShowTopicPicker] = useState(false)
   const [availableTasks, setAvailableTasks] = useState([])
 
   // Attachments
@@ -47,8 +50,26 @@ export default function Messages() {
   // Reactions & threads
   const [reactionPickerMsg, setReactionPickerMsg] = useState(null)
   const [expandedThread, setExpandedThread] = useState(null)
-  const [threadReplyBody, setThreadReplyBody] = useState('')
-  const [threadPosting, setThreadPosting] = useState(false)
+
+  // Topics
+  const [topics, setTopics] = useState([])
+  const [selectedTopic, setSelectedTopic] = useState(null) // topic id, or null = all
+  const [showArchived, setShowArchived] = useState(false)
+  const [showTopicForm, setShowTopicForm] = useState(false)
+  const [newTopicTitle, setNewTopicTitle] = useState('')
+  const [newTopicCategory, setNewTopicCategory] = useState(TOPIC_CATEGORY_KEYS[0])
+  const [creatingTopic, setCreatingTopic] = useState(false)
+  // After creating a topic from the composer, auto-insert its tag into `body`.
+  const [insertOnCreate, setInsertOnCreate] = useState(false)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    return localStorage.getItem('msg-topic-sidebar-collapsed') === '1'
+  })
+
+  function toggleSidebar() {
+    const next = !sidebarCollapsed
+    setSidebarCollapsed(next)
+    localStorage.setItem('msg-topic-sidebar-collapsed', next ? '1' : '0')
+  }
 
   useEffect(() => {
     loadAll()
@@ -56,6 +77,20 @@ export default function Messages() {
     pollRef.current = setInterval(() => silentRefresh(), 30000)
     return () => clearInterval(pollRef.current)
   }, [owner, repo])
+
+  // Honor ?topic=NAME — auto-select that topic in the sidebar (if found).
+  useEffect(() => {
+    if (loading || !topicQuery || topics.length === 0) return
+    const match = topics.find((t) => t.title.toLowerCase() === topicQuery.toLowerCase())
+    if (match) {
+      setSelectedTopic(match.id)
+      setShowArchived(match.status === 'done')
+    }
+    // Strip the param so refreshes don't re-trigger.
+    const next = new URLSearchParams(searchParams)
+    next.delete('topic')
+    setSearchParams(next, { replace: true })
+  }, [loading, topicQuery, topics])
 
   // Scroll to highlighted message
   useEffect(() => {
@@ -76,15 +111,27 @@ export default function Messages() {
 
   async function loadAll() {
     setLoading(true)
-    const [msgs, collabs, tasks] = await Promise.all([
+    const [msgs, collabs, tasks, tps] = await Promise.all([
       loadMessages(owner, repo),
       getCollaborators(owner, repo),
       loadTasks(),
+      loadTopics(owner, repo).catch(() => []),
     ])
-    setMessages(msgs)
+    setMessages(mergeMessages(msgs))
     setMembers(collabs)
-    setAvailableTasks(tasks)
+    setAvailableTasks(mergePending('tasks', tasks).concat(tasks))
+    setTopics(mergePending('topics', tps).concat(tps))
     setLoading(false)
+  }
+
+  // Merge remote messages with locally-pending ones (created here but maybe
+  // not yet propagated to GitHub), then sort newest-first to match loadMessages.
+  function mergeMessages(remote) {
+    const survivors = mergePending('messages', remote)
+    if (survivors.length === 0) return remote
+    return [...remote, ...survivors].sort(
+      (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
+    )
   }
 
   async function loadTasks() {
@@ -104,7 +151,7 @@ export default function Messages() {
   async function silentRefresh() {
     try {
       const msgs = await loadMessages(owner, repo)
-      setMessages(msgs)
+      setMessages(mergeMessages(msgs))
     } catch {}
   }
 
@@ -121,6 +168,7 @@ export default function Messages() {
   async function handleDeleteMessage(msg) {
     if (!confirm('Delete this message?')) return
     setMessages((prev) => prev.filter((m) => m.id !== msg.id))
+    useStore.getState().removePendingWrite('messages', msg.id)
     try {
       const { sha } = await getFileContent(owner, repo, msg._path)
       await deleteFile(owner, repo, msg._path, `[discuss] Delete message`, sha)
@@ -173,28 +221,73 @@ export default function Messages() {
     }
   }
 
-  // ── Thread reply ──
-  async function handleThreadReply(parentMsg) {
-    if (!threadReplyBody.trim()) return
-    setThreadPosting(true)
-    try {
-      const trimmed = threadReplyBody.trim()
-      const taskRefs = (trimmed.match(/#(\S+)/g) || []).map((t) => t.slice(1))
-      const replyMsg = {
-        author: currentUser?.login || 'unknown',
-        body: trimmed,
-        ref: null,
-        taskRefs,
-        replyTo: parentMsg.id,
-      }
-      const created = await createMessage(owner, repo, replyMsg)
-      setMessages((prev) => [created, ...prev])
-      setThreadReplyBody('')
-    } catch (err) {
-      alert(err.message)
-    } finally {
-      setThreadPosting(false)
+  // ── Thread reply: receives a fully-built reply from <ThreadCompose /> ──
+  function handleThreadReplySent(created) {
+    setMessages((prev) => [created, ...prev])
+  }
+
+  // ── Topic CRUD ──
+  async function handleCreateTopic(e) {
+    e.preventDefault()
+    if (!newTopicTitle.trim()) return
+    const title = newTopicTitle.trim().replace(/\s+/g, '-')
+    if (topics.some((t) => t.title.toLowerCase() === title.toLowerCase())) {
+      alert('A topic with this name already exists.')
+      return
     }
+    setCreatingTopic(true)
+    try {
+      const created = await createTopic(owner, repo, {
+        title,
+        category: newTopicCategory,
+        createdBy: currentUser?.login,
+      })
+      addPendingWrite('topics', created)
+      setTopics((prev) => [created, ...prev])
+      if (insertOnCreate) setBody((prev) => `${prev}${prev && !prev.endsWith(' ') ? ' ' : ''}#!${created.title} `)
+      setShowTopicForm(false)
+      setNewTopicTitle('')
+      setNewTopicCategory(TOPIC_CATEGORY_KEYS[0])
+      setInsertOnCreate(false)
+    } catch (err) {
+      alert(`Failed to create topic: ${err.message}`)
+    } finally {
+      setCreatingTopic(false)
+    }
+  }
+
+  async function handleArchiveTopic(topic) {
+    const target = topic.status === 'done' ? 'open' : 'done'
+    // Optimistic
+    setTopics((prev) => prev.map((t) => t.id === topic.id ? { ...t, status: target, doneAt: target === 'done' ? new Date().toISOString() : null } : t))
+    try {
+      await updateTopic(owner, repo, topic, {
+        status: target,
+        doneAt: target === 'done' ? new Date().toISOString() : null,
+      })
+    } catch (err) {
+      // Rollback
+      setTopics((prev) => prev.map((t) => t.id === topic.id ? topic : t))
+      alert(`Failed: ${err.message}`)
+    }
+  }
+
+  async function handleDeleteTopic(topic) {
+    if (!confirm(`Delete topic "${topic.title}"? Messages referencing it will show as missing.`)) return
+    setTopics((prev) => prev.filter((t) => t.id !== topic.id))
+    useStore.getState().removePendingWrite('topics', topic.id)
+    if (selectedTopic === topic.id) setSelectedTopic(null)
+    try {
+      await deleteTopic(owner, repo, topic)
+    } catch (err) {
+      setTopics((prev) => [...prev, topic])
+      alert(`Delete failed: ${err.message}`)
+    }
+  }
+
+  function handleTopicChipClick(topic) {
+    setSelectedTopic(topic.id)
+    setShowArchived(topic.status === 'done')
   }
 
   async function handlePost(e) {
@@ -202,13 +295,25 @@ export default function Messages() {
     if (!body.trim()) return
     setPosting(true)
     try {
-      const trimmedBody = body.trim()
-      const taskRefs = (trimmedBody.match(/#(\S+)/g) || []).map((t) => t.slice(1))
+      let trimmedBody = body.trim()
+      // If the user is currently viewing a topic, auto-tag the message with it
+      // (unless they already typed the tag themselves).
+      const currentTopic = selectedTopic ? topics.find((t) => t.id === selectedTopic) : null
+      if (currentTopic) {
+        const existing = extractTopicRefs(trimmedBody).map((r) => r.toLowerCase())
+        if (!existing.includes(currentTopic.title.toLowerCase())) {
+          trimmedBody = `#!${currentTopic.title} ${trimmedBody}`
+        }
+      }
+      // Match #task but NOT #!topic — first char after # must not be `!`.
+      const taskRefs = (trimmedBody.match(/#[^!\s]\S*/g) || []).map((t) => t.slice(1))
+      const topicRefs = extractTopicRefs(trimmedBody)
       const msg = {
         author: currentUser?.login || 'unknown',
         body: trimmedBody,
         ref: refType && refId ? { type: refType, id: refId } : null,
         taskRefs,
+        topicRefs,
         label: composeLabel || null,
         pinned: false,
         reactions: {},
@@ -216,6 +321,7 @@ export default function Messages() {
         attachments: attachments.length > 0 ? attachments : undefined,
       }
       const created = await createMessage(owner, repo, msg)
+      addPendingWrite('messages', created)
       setMessages((prev) => [created, ...prev])
       setBody('')
       setRefType('')
@@ -273,6 +379,17 @@ export default function Messages() {
     setShowTaskPicker(false)
   }
 
+  function insertTopicRef(title) {
+    setBody((prev) => prev + `#!${title} `)
+    setShowTopicPicker(false)
+  }
+
+  function openCreateTopicFromComposer() {
+    setShowTopicPicker(false)
+    setInsertOnCreate(true)
+    setShowTopicForm(true)
+  }
+
   const me = currentUser?.login
 
   // Separate replies from top-level messages
@@ -306,8 +423,40 @@ export default function Messages() {
     }
   }
 
+  // Resolve the active topic (if any) so we can filter by its title.
+  // selectedTopic:
+  //   null      → main discussion (hide messages tagged with any topic)
+  //   'all'     → show every message regardless of topic tags
+  //   <topicId> → only messages tagged with that topic
+  const activeTopic = (selectedTopic && selectedTopic !== 'all')
+    ? topics.find((t) => t.id === selectedTopic)
+    : null
+  const activeTopicNameLower = activeTopic?.title.toLowerCase()
+
+  function messageRefs(m) {
+    return m.topicRefs?.length ? m.topicRefs : extractTopicRefs(m.body || '')
+  }
+  function messageMatchesTopic(m) {
+    if (!activeTopicNameLower) return true
+    return messageRefs(m).some((r) => r.toLowerCase() === activeTopicNameLower)
+  }
+
+  // For topic filtering, also surface parents whose replies reference the topic
+  const parentIdsWithTopicReplies = new Set()
+  if (activeTopicNameLower) {
+    for (const r of allReplies) {
+      if (messageMatchesTopic(r) && r.replyTo) parentIdsWithTopicReplies.add(r.replyTo)
+    }
+  }
+
   // Apply filters to top-level messages
   const filtered = topLevel.filter((m) => {
+    if (activeTopicNameLower) {
+      if (!(messageMatchesTopic(m) || parentIdsWithTopicReplies.has(m.id))) return false
+    } else if (selectedTopic === null) {
+      // Main discussion: exclude messages with any topic ref
+      if (messageRefs(m).length > 0) return false
+    }
     if (filter === 'mine') return m.author === me
     if (filter === 'mentions') return mentionsMe(m) || parentIdsWithMentionedReplies.has(m.id)
     if (filter.startsWith('label-')) return m.label === filter.slice(6)
@@ -318,9 +467,175 @@ export default function Messages() {
   const pinned = filtered.filter((m) => m.pinned)
   const unpinned = filtered.filter((m) => !m.pinned)
 
+  // Topic sidebar grouping
+  const visibleTopics = topics.filter((t) => showArchived ? true : t.status !== 'done')
+  const openTopics = visibleTopics.filter((t) => t.status !== 'done')
+  const archivedTopics = visibleTopics.filter((t) => t.status === 'done')
+
   return (
-    <div className="p-8 max-w-3xl">
-      <h2 className="font-display font-bold text-xl text-on-surface mb-4">Messages</h2>
+    <div className="flex gap-6 p-8 max-w-6xl">
+      {/* Topic sidebar (placed first in DOM but rendered on the right via order-2) */}
+      <aside className={`order-2 shrink-0 ${sidebarCollapsed ? 'w-8' : 'w-56'} transition-[width]`}>
+        {sidebarCollapsed ? (
+          <button
+            type="button"
+            onClick={toggleSidebar}
+            className="w-8 h-8 flex items-center justify-center rounded-lg bg-surface-card shadow-card hover:shadow-lifted text-on-surface-variant cursor-pointer"
+            title="Expand topics"
+          >
+            ◀
+          </button>
+        ) : (
+        <>
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={toggleSidebar}
+              className="text-on-surface-dim hover:text-on-surface text-xs cursor-pointer w-5 h-5 flex items-center justify-center rounded hover:bg-surface-low"
+              title="Collapse"
+            >
+              ▶
+            </button>
+            <h3 className="font-display font-bold text-sm text-on-surface">Topics</h3>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowTopicForm(true)}
+            className="text-xs text-primary hover:underline cursor-pointer"
+            title="New topic"
+          >
+            + New
+          </button>
+        </div>
+        <button
+          type="button"
+          onClick={() => setSelectedTopic(null)}
+          className={`w-full text-left px-2.5 py-1.5 rounded-lg text-xs mb-1 cursor-pointer ${
+            selectedTopic === null ? 'bg-primary-surface text-primary font-medium' : 'text-on-surface-variant hover:bg-surface-low'
+          }`}
+          title="Hide messages tagged with any topic"
+        >
+          Main discussion
+        </button>
+        <div className="space-y-0.5 mt-2">
+          {openTopics.length === 0 ? (
+            <p className="text-[10px] text-on-surface-dim px-2.5 py-1">No open topics yet.</p>
+          ) : openTopics.map((t) => {
+            const cat = TOPIC_CATEGORIES[t.category] || TOPIC_CATEGORIES.research
+            const active = selectedTopic === t.id
+            return (
+              <div key={t.id} className={`group flex items-center gap-1 rounded-lg ${active ? 'bg-primary-surface' : 'hover:bg-surface-low'}`}>
+                <button
+                  type="button"
+                  onClick={() => setSelectedTopic(t.id)}
+                  className="flex-1 min-w-0 text-left px-2.5 py-1.5 text-xs cursor-pointer flex items-center gap-2"
+                  title={`#!${t.title}`}
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${cat.dot}`} />
+                  <span className={`truncate ${active ? 'text-primary font-medium' : 'text-on-surface-variant'}`}>
+                    #!{t.title}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleArchiveTopic(t)}
+                  className="opacity-0 group-hover:opacity-100 text-[10px] text-on-surface-dim hover:text-primary px-1 cursor-pointer"
+                  title="Archive topic"
+                >
+                  ✓
+                </button>
+                {t.createdBy === me && (
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteTopic(t)}
+                    className="opacity-0 group-hover:opacity-100 text-[10px] text-on-surface-dim hover:text-red-500 px-1 mr-1 cursor-pointer"
+                    title="Delete topic"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+            )
+          })}
+        </div>
+
+        <button
+          type="button"
+          onClick={() => setShowArchived(!showArchived)}
+          className="mt-4 text-[10px] text-on-surface-dim hover:text-on-surface-variant cursor-pointer"
+        >
+          {showArchived ? '▾' : '▸'} Archived ({topics.filter((t) => t.status === 'done').length})
+        </button>
+        {showArchived && (
+          <div className="space-y-0.5 mt-1">
+            {archivedTopics.map((t) => {
+              const cat = TOPIC_CATEGORIES[t.category] || TOPIC_CATEGORIES.research
+              const active = selectedTopic === t.id
+              return (
+                <div key={t.id} className={`group flex items-center gap-1 rounded-lg ${active ? 'bg-primary-surface' : 'hover:bg-surface-low'}`}>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedTopic(t.id)}
+                    className="flex-1 min-w-0 text-left px-2.5 py-1.5 text-xs cursor-pointer flex items-center gap-2"
+                  >
+                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${cat.dot} opacity-50`} />
+                    <span className={`truncate line-through ${active ? 'text-primary' : 'text-on-surface-dim'}`}>
+                      #!{t.title}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleArchiveTopic(t)}
+                    className="opacity-0 group-hover:opacity-100 text-[10px] text-on-surface-dim hover:text-primary px-1 cursor-pointer"
+                    title="Reopen"
+                  >
+                    ↺
+                  </button>
+                  {t.createdBy === me && (
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteTopic(t)}
+                      className="opacity-0 group-hover:opacity-100 text-[10px] text-on-surface-dim hover:text-red-500 px-1 mr-1 cursor-pointer"
+                      title="Delete topic"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )}
+
+        <p className="text-[10px] text-on-surface-dim mt-4 leading-relaxed px-1">
+          Tip: type <code className="bg-surface-low rounded px-1">#!name</code> in any message to tag a topic.
+        </p>
+        </>
+        )}
+      </aside>
+
+      {/* Main column */}
+      <div className="order-1 flex-1 min-w-0 max-w-3xl">
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="font-display font-bold text-xl text-on-surface">Messages</h2>
+        {activeTopic && (
+          <div className="flex items-center gap-2 text-xs">
+            <span className="text-on-surface-dim">Filtered by topic:</span>
+            <span className="px-2 py-0.5 bg-primary-surface text-primary rounded-full font-medium">
+              #!{activeTopic.title}
+            </span>
+            <button
+              type="button"
+              onClick={() => setSelectedTopic(null)}
+              className="text-on-surface-dim hover:text-on-surface cursor-pointer"
+              title="Clear topic filter"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+      </div>
 
       {/* Compose */}
       <form onSubmit={handlePost} className="bg-surface-card rounded-xl shadow-card p-5 mb-6">
@@ -329,7 +644,9 @@ export default function Messages() {
             <textarea
               value={body}
               onChange={(e) => setBody(e.target.value)}
-              placeholder="Write a message... use @username to mention someone"
+              placeholder={activeTopic
+                ? `Write a message in #!${activeTopic.title}…`
+                : 'Write a message... use @username to mention someone'}
               rows={2}
               required
               className="w-full px-3 py-2 bg-surface-low border-0 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)] resize-none"
@@ -378,6 +695,36 @@ export default function Messages() {
                   )) : (
                     <div className="px-3 py-1.5 text-xs text-on-surface-dim">No tasks found</div>
                   )}
+                </div>
+              )}
+            </div>
+
+            {/* #! topic picker */}
+            <div className="relative">
+              <button type="button" onClick={() => setShowTopicPicker(!showTopicPicker)}
+                className="px-2 py-1 text-xs bg-surface-low text-on-surface-variant rounded-lg hover:shadow-card cursor-pointer">
+                #! Topic
+              </button>
+              {showTopicPicker && (
+                <div className="absolute bottom-full left-0 mb-1 bg-surface-card rounded-xl shadow-float py-1 min-w-[200px] max-h-56 overflow-y-auto z-10">
+                  {topics.filter((t) => t.status !== 'done').map((t) => {
+                    const cat = TOPIC_CATEGORIES[t.category] || TOPIC_CATEGORIES.research
+                    return (
+                      <button key={t.id} type="button" onClick={() => insertTopicRef(t.title)}
+                        className="w-full text-left px-3 py-1.5 text-sm hover:bg-surface-low flex items-center gap-2 cursor-pointer">
+                        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${cat.dot}`} />
+                        <span className="truncate flex-1">#!{t.title}</span>
+                      </button>
+                    )
+                  })}
+                  {topics.filter((t) => t.status !== 'done').length === 0 && (
+                    <div className="px-3 py-1.5 text-xs text-on-surface-dim">No open topics</div>
+                  )}
+                  <div className="border-t my-1" style={{ borderColor: 'var(--color-surface-low)' }} />
+                  <button type="button" onClick={openCreateTopicFromComposer}
+                    className="w-full text-left px-3 py-1.5 text-sm hover:bg-surface-low flex items-center gap-2 text-primary cursor-pointer">
+                    + Create new topic…
+                  </button>
                 </div>
               )}
             </div>
@@ -444,6 +791,32 @@ export default function Messages() {
         )}
       </form>
 
+      {/* Topic scope toggle — only shown in main/all views (not when a single topic is filtered) */}
+      {(selectedTopic === null || selectedTopic === 'all') && (
+        <div className="flex items-center gap-1.5 mb-3 bg-surface-card shadow-card rounded-full p-1 w-fit">
+          <button
+            type="button"
+            onClick={() => setSelectedTopic(null)}
+            className={`px-3 py-1 text-xs rounded-full cursor-pointer transition-all ${
+              selectedTopic === null ? 'gradient-primary text-white' : 'text-on-surface-variant hover:text-on-surface'
+            }`}
+            title="Hide messages tagged with any topic"
+          >
+            Main discussion
+          </button>
+          <button
+            type="button"
+            onClick={() => setSelectedTopic('all')}
+            className={`px-3 py-1 text-xs rounded-full cursor-pointer transition-all ${
+              selectedTopic === 'all' ? 'gradient-primary text-white' : 'text-on-surface-variant hover:text-on-surface'
+            }`}
+            title="Show every message including topic-tagged ones"
+          >
+            All messages
+          </button>
+        </div>
+      )}
+
       {/* Filters */}
       <div className="flex gap-1.5 mb-4 flex-wrap">
         {[
@@ -478,16 +851,17 @@ export default function Messages() {
                 repliesByParent={repliesByParent}
                 expandedThread={expandedThread}
                 setExpandedThread={setExpandedThread}
-                threadReplyBody={threadReplyBody}
-                setThreadReplyBody={setThreadReplyBody}
-                threadPosting={threadPosting}
-                handleThreadReply={handleThreadReply}
+                onThreadReplySent={handleThreadReplySent}
+                currentUser={currentUser}
+                members={members}
                 togglePin={togglePin}
                 toggleReaction={toggleReaction}
                 reactionPickerMsg={reactionPickerMsg}
                 setReactionPickerMsg={setReactionPickerMsg}
                 onDelete={handleDeleteMessage}
                 taskList={availableTasks}
+                topicList={topics}
+                onTopicClick={handleTopicChipClick}
               />
             ))}
           </div>
@@ -511,15 +885,16 @@ export default function Messages() {
               repliesByParent={repliesByParent}
               expandedThread={expandedThread}
               setExpandedThread={setExpandedThread}
-              threadReplyBody={threadReplyBody}
-              setThreadReplyBody={setThreadReplyBody}
-              threadPosting={threadPosting}
-              handleThreadReply={handleThreadReply}
+              onThreadReplySent={handleThreadReplySent}
+              currentUser={currentUser}
+              members={members}
               togglePin={togglePin}
               toggleReaction={toggleReaction}
               reactionPickerMsg={reactionPickerMsg}
               setReactionPickerMsg={setReactionPickerMsg}
               onDelete={handleDeleteMessage}
+              topicList={topics}
+              onTopicClick={handleTopicChipClick}
             />
           ))}
         </div>
@@ -540,6 +915,69 @@ export default function Messages() {
           onClose={() => setShowFilePicker(false)}
         />
       )}
+      </div>
+
+      {/* New topic modal */}
+      {showTopicForm && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={() => !creatingTopic && setShowTopicForm(false)}>
+          <form
+            onSubmit={handleCreateTopic}
+            onClick={(e) => e.stopPropagation()}
+            className="bg-surface-card rounded-xl shadow-float p-6 w-full max-w-sm"
+          >
+            <h3 className="font-display font-bold text-base text-on-surface mb-4">New topic</h3>
+            <label className="block text-xs text-on-surface-variant mb-1">Name</label>
+            <input
+              autoFocus
+              value={newTopicTitle}
+              onChange={(e) => setNewTopicTitle(e.target.value)}
+              placeholder="release-prep"
+              maxLength={50}
+              className="w-full px-3 py-2 bg-surface-low border-0 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)] mb-1"
+            />
+            <p className="text-[10px] text-on-surface-dim mb-4">
+              Tagged in messages as <code className="bg-surface-low rounded px-1">#!{newTopicTitle.trim().replace(/\s+/g, '-') || 'name'}</code>. Spaces become dashes.
+            </p>
+            <label className="block text-xs text-on-surface-variant mb-1">Category</label>
+            <div className="flex flex-wrap gap-1.5 mb-5">
+              {TOPIC_CATEGORY_KEYS.map((k) => {
+                const cat = TOPIC_CATEGORIES[k]
+                const active = newTopicCategory === k
+                return (
+                  <button
+                    key={k}
+                    type="button"
+                    onClick={() => setNewTopicCategory(k)}
+                    className={`px-2.5 py-1 text-xs rounded-full cursor-pointer flex items-center gap-1.5 ${
+                      active ? cat.color + ' ring-1 ring-current' : 'bg-surface-low text-on-surface-dim'
+                    }`}
+                  >
+                    <span className={`w-1.5 h-1.5 rounded-full ${cat.dot}`} />
+                    {cat.label}
+                  </button>
+                )
+              })}
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowTopicForm(false)}
+                disabled={creatingTopic}
+                className="px-3 py-1.5 text-sm text-on-surface-variant hover:bg-surface-low rounded-lg cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={creatingTopic || !newTopicTitle.trim()}
+                className="px-4 py-1.5 gradient-primary text-white text-sm rounded-full disabled:opacity-50 cursor-pointer"
+              >
+                {creatingTopic ? 'Creating...' : 'Create'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   )
 }
@@ -547,8 +985,8 @@ export default function Messages() {
 // ── Message Card Component ──
 
 function MessageCard({
-  msg, me, owner, repo, taskList, navigate, repliesByParent, expandedThread, setExpandedThread,
-  threadReplyBody, setThreadReplyBody, threadPosting, handleThreadReply,
+  msg, me, owner, repo, taskList, topicList, onTopicClick, navigate, repliesByParent, expandedThread, setExpandedThread,
+  onThreadReplySent, currentUser, members,
   togglePin, toggleReaction, reactionPickerMsg, setReactionPickerMsg,
   onDelete,
 }) {
@@ -598,7 +1036,7 @@ function MessageCard({
             )}
           </div>
           <p className="text-sm text-on-surface-variant whitespace-pre-wrap">
-            {renderBody(msg.body, taskList, navigate)}
+            {renderBody(msg.body, taskList, navigate, topicList, onTopicClick)}
           </p>
           {msg.ref && (
             <div className="mt-2 inline-flex items-center gap-1 px-2 py-0.5 bg-surface-low rounded-lg text-xs text-on-surface-variant">
@@ -707,10 +1145,7 @@ function MessageCard({
 
             {/* Reply button */}
             <button
-              onClick={() => {
-                setExpandedThread(isExpanded ? null : msg.id)
-                setThreadReplyBody('')
-              }}
+              onClick={() => setExpandedThread(isExpanded ? null : msg.id)}
               className="text-on-surface-dim hover:text-on-surface text-xs cursor-pointer px-1 py-0.5 rounded hover:bg-surface-low"
             >
               Reply{replyCount > 0 ? ` (${replyCount})` : ''}
@@ -720,10 +1155,7 @@ function MessageCard({
           {/* Reply count indicator (always visible if there are replies) */}
           {replyCount > 0 && !isExpanded && (
             <button
-              onClick={() => {
-                setExpandedThread(msg.id)
-                setThreadReplyBody('')
-              }}
+              onClick={() => setExpandedThread(msg.id)}
               className="mt-2 text-xs text-primary hover:underline cursor-pointer"
             >
               {replyCount} {replyCount === 1 ? 'reply' : 'replies'}
@@ -737,38 +1169,34 @@ function MessageCard({
                 <div key={reply.id} className="mb-2 flex items-start gap-2">
                   <img src={`https://github.com/${reply.author}.png?size=32`} alt=""
                     className="w-6 h-6 rounded-full shrink-0 mt-0.5" />
-                  <div className="min-w-0">
+                  <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5 mb-0.5">
                       <span className="text-xs font-medium text-on-surface">{reply.author}</span>
                       <span className="text-[10px] text-on-surface-dim">{formatTime(reply.createdAt)}</span>
                     </div>
-                    <p className="text-xs text-on-surface-variant whitespace-pre-wrap">{renderBody(reply.body, taskList, navigate)}</p>
+                    <p className="text-xs text-on-surface-variant whitespace-pre-wrap">{renderBody(reply.body, taskList, navigate, topicList, onTopicClick)}</p>
+                    {reply.attachments?.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 mt-1.5">
+                        {reply.attachments.map((a, i) => (
+                          <ReplyAttachment key={i} attachment={a} owner={owner} repo={repo} />
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
               ))}
-              {/* Thread compose */}
-              <div className="bg-surface-low rounded-lg p-2 flex gap-2 mt-1">
-                <input
-                  type="text"
-                  value={threadReplyBody}
-                  onChange={(e) => setThreadReplyBody(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault()
-                      handleThreadReply(msg)
-                    }
-                  }}
-                  placeholder="Write a reply..."
-                  className="flex-1 text-xs bg-transparent border-0 focus:outline-none text-on-surface placeholder:text-on-surface-dim"
-                />
-                <button
-                  onClick={() => handleThreadReply(msg)}
-                  disabled={threadPosting || !threadReplyBody.trim()}
-                  className="px-2 py-0.5 text-[10px] gradient-primary text-white rounded-full disabled:opacity-50 cursor-pointer shrink-0"
-                >
-                  {threadPosting ? '...' : 'Send'}
-                </button>
-              </div>
+              {/* Thread compose — full feature parity with main composer */}
+              <ThreadCompose
+                key={msg.id}
+                parentMsg={msg}
+                owner={owner}
+                repo={repo}
+                currentUser={currentUser}
+                members={members}
+                availableTasks={taskList || []}
+                availableTopics={topicList || []}
+                onSent={onThreadReplySent}
+              />
             </div>
           )}
         </div>
@@ -807,9 +1235,29 @@ function TrashIcon({ className }) {
   )
 }
 
-function renderBody(text, taskList, onNavigate) {
+function renderBody(text, taskList, onNavigate, topicList, onTopicClick) {
   const taskNames = (taskList || []).map((t) => t.title.toLowerCase())
-  return text.split(/([@#]\S+)/g).map((part, i) => {
+  const topicNames = new Map((topicList || []).map((t) => [t.title.toLowerCase(), t]))
+  // Match `#!name` (topic) BEFORE `#name` (task) since the former is a prefix.
+  return text.split(/(#!\S+|[@#]\S+)/g).map((part, i) => {
+    if (part.startsWith('#!')) {
+      const name = part.slice(2)
+      const topic = topicNames.get(name.toLowerCase())
+      if (!topic) {
+        return <span key={i} className="bg-red-50 text-red-400 line-through rounded px-1.5 py-0.5 text-xs font-medium" title="Topic doesn't exist — create from the sidebar">{part}</span>
+      }
+      const archived = topic.status === 'done'
+      return (
+        <span
+          key={i}
+          onClick={(e) => { e.stopPropagation(); onTopicClick?.(topic) }}
+          className={`rounded px-1.5 py-0.5 text-xs font-medium cursor-pointer hover:underline ${archived ? 'bg-surface-low text-on-surface-dim line-through' : 'bg-primary-surface text-primary'}`}
+          title={archived ? 'Archived topic' : `Topic: ${topic.title}`}
+        >
+          {part}
+        </span>
+      )
+    }
     if (part.startsWith('@'))
       return <span key={i} className="text-primary font-medium">{part}</span>
     if (part.startsWith('#')) {
@@ -830,6 +1278,271 @@ function renderBody(text, taskList, onNavigate) {
     }
     return part
   })
+}
+
+// Extract topic names referenced via `#!name` in a message body.
+export function extractTopicRefs(body) {
+  if (!body) return []
+  const matches = body.match(/#!(\S+)/g) || []
+  return [...new Set(matches.map((m) => m.slice(2)))]
+}
+
+// ── Thread compose: mini version of the main composer for sub-replies ──
+
+function ThreadCompose({ parentMsg, owner, repo, currentUser, members, availableTasks, availableTopics, onSent }) {
+  const addPendingWrite = useStore((s) => s.addPendingWrite)
+  const [body, setBody] = useState('')
+  const [attachments, setAttachments] = useState([])
+  const [posting, setPosting] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const [showMentionPicker, setShowMentionPicker] = useState(false)
+  const [showTaskPicker, setShowTaskPicker] = useState(false)
+  const [showTopicPicker, setShowTopicPicker] = useState(false)
+  const [showFilePicker, setShowFilePicker] = useState(false)
+  const fileInputRef = useRef(null)
+
+  function insertMention(login) {
+    setBody((prev) => prev + `@${login} `)
+    setShowMentionPicker(false)
+  }
+
+  function insertTaskRef(title) {
+    setBody((prev) => prev + `#${title} `)
+    setShowTaskPicker(false)
+  }
+
+  function insertTopicRef(title) {
+    setBody((prev) => prev + `#!${title} `)
+    setShowTopicPicker(false)
+  }
+
+  async function handleFileUpload(e) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    if (file.size > 25 * 1024 * 1024) { alert('File too large (max 25MB)'); return }
+    if (!confirm(`Upload "${file.name}" (${(file.size / 1024).toFixed(1)} KB) and commit it to the repository?\n\nMake sure this file does not contain sensitive information.`)) {
+      e.target.value = ''
+      return
+    }
+    setUploading(true)
+    try {
+      const base64 = await new Promise((resolve) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(reader.result.split(',')[1])
+        reader.readAsDataURL(file)
+      })
+      const result = await uploadAsset(owner, repo, file.name, base64)
+      setAttachments((prev) => [...prev, { name: file.name, path: result.path }])
+      // Mirror main composer behavior: register in docs library
+      await createDoc(owner, repo, {
+        title: file.name,
+        url: result.path,
+        type: detectFileType(file.name),
+        description: 'Uploaded via Messages',
+        sharedBy: currentUser?.login || 'unknown',
+      })
+    } catch (err) {
+      alert(`Upload failed: ${err.message}`)
+    } finally {
+      setUploading(false)
+      e.target.value = ''
+    }
+  }
+
+  async function handleSend() {
+    const trimmed = body.trim()
+    if (!trimmed) return
+    setPosting(true)
+    try {
+      const taskRefs = (trimmed.match(/#[^!\s]\S*/g) || []).map((t) => t.slice(1))
+      const topicRefs = extractTopicRefs(trimmed)
+      const replyMsg = {
+        author: currentUser?.login || 'unknown',
+        body: trimmed,
+        ref: null,
+        taskRefs,
+        topicRefs,
+        replyTo: parentMsg.id,
+        attachments: attachments.length > 0 ? attachments : undefined,
+      }
+      const created = await createMessage(owner, repo, replyMsg)
+      addPendingWrite('messages', created)
+      onSent?.(created)
+      setBody('')
+      setAttachments([])
+    } catch (err) {
+      alert(err.message)
+    } finally {
+      setPosting(false)
+    }
+  }
+
+  return (
+    <div className="bg-surface-low rounded-lg p-2 mt-1">
+      <textarea
+        value={body}
+        onChange={(e) => setBody(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !e.shiftKey && (e.metaKey || e.ctrlKey)) {
+            e.preventDefault()
+            handleSend()
+          }
+        }}
+        placeholder="Write a reply... (⌘+Enter to send)"
+        rows={2}
+        className="w-full px-2 py-1 bg-transparent border-0 text-xs text-on-surface placeholder:text-on-surface-dim resize-none focus:outline-none"
+      />
+      <div className="flex items-center gap-1.5 flex-wrap mt-1">
+        {/* @ mention picker */}
+        <div className="relative">
+          <button type="button" onClick={() => setShowMentionPicker(!showMentionPicker)}
+            className="px-1.5 py-0.5 text-[10px] bg-surface-card text-on-surface-variant rounded-md hover:shadow-card cursor-pointer">
+            @
+          </button>
+          {showMentionPicker && (
+            <div className="absolute bottom-full left-0 mb-1 bg-surface-card rounded-xl shadow-float py-1 min-w-[140px] z-10 max-h-40 overflow-y-auto">
+              {(members || []).map((m) => (
+                <button key={m.login} type="button" onClick={() => insertMention(m.login)}
+                  className="w-full text-left px-2 py-1 text-xs hover:bg-surface-low flex items-center gap-2 cursor-pointer">
+                  <img src={m.avatar_url} alt="" className="w-4 h-4 rounded-full" />
+                  {m.login}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* # task picker */}
+        <div className="relative">
+          <button type="button" onClick={() => setShowTaskPicker(!showTaskPicker)}
+            className="px-1.5 py-0.5 text-[10px] bg-surface-card text-on-surface-variant rounded-md hover:shadow-card cursor-pointer">
+            #
+          </button>
+          {showTaskPicker && (
+            <div className="absolute bottom-full left-0 mb-1 bg-surface-card rounded-xl shadow-float py-1 min-w-[180px] max-h-48 overflow-y-auto z-10">
+              {availableTasks.length > 0 ? availableTasks.map((t) => (
+                <button key={t.id || t.title} type="button" onClick={() => insertTaskRef(t.title)}
+                  className="w-full text-left px-2 py-1 text-xs hover:bg-surface-low flex items-center gap-2 cursor-pointer">
+                  <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusDotColor(t.status)}`} />
+                  <span className="truncate flex-1">{t.title}</span>
+                </button>
+              )) : (
+                <div className="px-2 py-1 text-[10px] text-on-surface-dim">No tasks</div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* #! topic picker */}
+        <div className="relative">
+          <button type="button" onClick={() => setShowTopicPicker(!showTopicPicker)}
+            className="px-1.5 py-0.5 text-[10px] bg-surface-card text-on-surface-variant rounded-md hover:shadow-card cursor-pointer">
+            #!
+          </button>
+          {showTopicPicker && (
+            <div className="absolute bottom-full left-0 mb-1 bg-surface-card rounded-xl shadow-float py-1 min-w-[180px] max-h-48 overflow-y-auto z-10">
+              {(availableTopics || []).filter((t) => t.status !== 'done').map((t) => {
+                const cat = TOPIC_CATEGORIES[t.category] || TOPIC_CATEGORIES.research
+                return (
+                  <button key={t.id} type="button" onClick={() => insertTopicRef(t.title)}
+                    className="w-full text-left px-2 py-1 text-xs hover:bg-surface-low flex items-center gap-2 cursor-pointer">
+                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${cat.dot}`} />
+                    <span className="truncate flex-1">#!{t.title}</span>
+                  </button>
+                )
+              })}
+              {(availableTopics || []).filter((t) => t.status !== 'done').length === 0 && (
+                <div className="px-2 py-1 text-[10px] text-on-surface-dim">No open topics</div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Upload + ref */}
+        <input ref={fileInputRef} type="file" className="hidden" onChange={handleFileUpload} />
+        <button type="button" onClick={() => fileInputRef.current?.click()} disabled={uploading}
+          className="px-1.5 py-0.5 text-[10px] bg-surface-card text-on-surface-variant rounded-md hover:shadow-card cursor-pointer disabled:opacity-50">
+          {uploading ? '…' : '+ File'}
+        </button>
+        <button type="button" onClick={() => setShowFilePicker(true)}
+          className="px-1.5 py-0.5 text-[10px] bg-surface-card text-on-surface-variant rounded-md hover:shadow-card cursor-pointer">
+          Ref
+        </button>
+
+        <button onClick={handleSend} disabled={posting || !body.trim()}
+          className="ml-auto px-2.5 py-0.5 text-[10px] gradient-primary text-white rounded-full disabled:opacity-50 cursor-pointer">
+          {posting ? '...' : 'Send'}
+        </button>
+      </div>
+
+      {attachments.length > 0 && (
+        <div className="flex flex-wrap gap-1 mt-1.5">
+          {attachments.map((a, i) => (
+            <span key={i} className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-surface-card rounded-md text-[10px] text-on-surface-variant">
+              <FileIcon className="w-2.5 h-2.5" />
+              {a.name}
+              <button type="button" onClick={() => setAttachments((prev) => prev.filter((_, j) => j !== i))}
+                className="text-on-surface-dim hover:text-red-500 cursor-pointer">
+                <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {showFilePicker && (
+        <FilePicker
+          owner={owner}
+          repo={repo}
+          onSelect={(file) => {
+            setAttachments((prev) =>
+              prev.some((a) => a.path === file.path) ? prev : [...prev, file]
+            )
+            setShowFilePicker(false)
+          }}
+          onClose={() => setShowFilePicker(false)}
+        />
+      )}
+    </div>
+  )
+}
+
+// Compact attachment chip used in expanded thread replies — opens file the
+// same way the main message attachments do.
+function ReplyAttachment({ attachment, owner, repo }) {
+  async function handleOpen(e) {
+    e.stopPropagation()
+    try {
+      const { content, name } = await getRawFileBase64(owner, repo, attachment.path)
+      const raw = content.replace(/\n/g, '')
+      if (window.electronAPI?.openFile) {
+        await window.electronAPI.openFile(raw, name)
+      } else {
+        const binary = atob(raw)
+        const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0))
+        const ext = name.split('.').pop().toLowerCase()
+        const mimeMap = { png:'image/png', jpg:'image/jpeg', jpeg:'image/jpeg', gif:'image/gif', webp:'image/webp', svg:'image/svg+xml', pdf:'application/pdf' }
+        const blob = new Blob([bytes], { type: mimeMap[ext] || 'application/octet-stream' })
+        const url = URL.createObjectURL(blob)
+        const link = document.createElement('a')
+        link.href = url
+        link.download = name
+        link.click()
+        URL.revokeObjectURL(url)
+      }
+    } catch (err) {
+      alert(`Failed to load file: ${err.message}`)
+    }
+  }
+  return (
+    <button onClick={handleOpen}
+      className="inline-flex items-center gap-1 px-2 py-0.5 bg-surface-low rounded-md text-[10px] text-primary hover:shadow-card cursor-pointer">
+      <FileIcon className="w-2.5 h-2.5" />
+      {attachment.name}
+    </button>
+  )
 }
 
 function statusDotColor(status) {
