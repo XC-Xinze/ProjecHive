@@ -440,12 +440,15 @@ export default function Timeline() {
   )
 }
 
-// Detect auto-generated commits from Board, Messages, Docs, and init
+// Detect auto-generated commits from Messages, Docs, Topics, and init.
+// `[task]` is intentionally NOT here — task creates/moves/completions are
+// meaningful project events the user wants visible even when system
+// activity is hidden.
 const SYSTEM_PATTERNS = [
-  /^\[task\] /,                          // Board: create/move/delete/update tasks
   /^\[discuss\] /,                       // Messages: all message commits
   /^\[doc\] /,                           // Docs: share/init/delete
   /^\[attach\] /,                        // File uploads
+  /^\[topic\] /,                         // Topics: open/archive/delete
   /^Initial commit$/,                    // GitHub auto-init
 ]
 
